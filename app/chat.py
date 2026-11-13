@@ -4,7 +4,7 @@ by the templated verdict, reasons and numbers from app/explain.py."""
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app import explain, llm, service
 from app.config import load_app, load_translations, region as get_region
@@ -99,6 +99,8 @@ RULES
      data_source; what if there is no data = missing_data; what it remembers = memory;
      tides, currents, fish or anything else it cannot check = limits.
    - Official warnings, emergencies, coast guard, who to call -> official_info.
+   - "Email me / watch my trip / remind me if it changes" is NOT a question about memory or data: the app watches
+     trips itself. If you get such a request, call assess_trip for the trip being talked about.
    - ONLY when the user asks WHEN to go ("when is the safest / best time", "ಯಾವಾಗ", "متى") -> find_safest_time with
      day = the day the user means (today / tomorrow / day_after_tomorrow), or next_48_hours if they name no day.
    - A day before today (yesterday) -> day = past. A day after day_after_tomorrow (next week) -> day = later.
@@ -125,7 +127,12 @@ RULES
    Do not repeat an old time yourself, never guess a time, and do not ask for it yourself: call the tool.
 3. Trip length: if the user says HOW LONG ("for 8 hours"), use that and set trip_length_given_by_user=true.
    If the user says when they will be BACK ("back by 9", "ನಾನು 9 ಗಂಟೆಗೆ ವಾಪಸ್", "برجع الساعة 9"), put that hour in
-   back_by_hour and keep the previous departure; the app works out the length. Otherwise back_by_hour = -1,
+   back_by_hour and keep the previous departure; the app works out the length. Two clock times for one trip
+   ("at 2 till 5", "2 to 5", "from 2 to 5", "2-5", "out till 5", even mistyped "at 2 from 5"; Kannada
+   "2 ಗಂಟೆಯಿಂದ 5 ಗಂಟೆಯವರೆಗೆ", "5 ಗಂಟೆಯವರೆಗೆ ಇರುತ್ತೇನೆ"; Arabic "الساعة 2 لين 5", "من 2 إلى 5", "برا لين 5") are the
+   departure and the RETURN: the second goes in back_by_hour (afternoon/evening reading if the first is), never in
+   trip_hours. A number is a length only with the word hours ("5 hours", "ಐದು ಗಂಟೆ ಪ್ರಯಾಣ", "5 ساعات").
+   Otherwise back_by_hour = -1,
    trip_length_given_by_user=false and trip_hours={hours}: the app keeps the previous length, or asks the user.
    Never guess a length and do not ask for it yourself: call the tool.
    If they say the DAY they will be back ("back tomorrow at 9"), put it in back_day. Give trip_hours exactly as
@@ -620,6 +627,9 @@ def chat(history: list[dict], lang: str, region_id: str, mode: str = "live", map
     region = get_region(region_id)
     lang = explain.pick_lang(lang, region_id)
     page = _clean_page(page)
+    if history and history[-1].get("role") == "user" and isinstance(history[-1].get("content"), str):
+        # spoken Kannada / Arabic clock hours as digits, for the model and the code alike
+        history = [*history[:-1], {**history[-1], "content": spoken_numbers(history[-1]["content"])}]
     place_ids = [h["id"] for h in region["harbours"]] + (["map_point"] if map_point else [])
     tools = schemas(place_ids, load_app()["trip"]["max_hours"])
     messages = [{"role": "system", "content": _system_prompt(region, lang, mode, map_point, context, page)}]
@@ -628,6 +638,20 @@ def chat(history: list[dict], lang: str, region_id: str, mode: str = "live", map
     question = next((m["content"] for m in reversed(history) if m.get("role") == "user"), "")
     said_places = mentioned_harbours(" ".join(m["content"] for m in history[-12:]
                                               if m.get("role") == "user" and m.get("content")), region)
+    offered = _offered_trip(page, region) if mode == "live" else None
+    if offered:                                  # the last answer asked "Want me to watch this trip?"
+        answer = watch_answer(question, region)
+        if answer:
+            return _watch_reply(answer, offered, lang, region_id, question, page, context)
+    elif mode == "live" and asks_to_watch(question) and not mentioned_harbours(question, region):
+        # Asked later, in their own words ("can you still send me the mail?"): the trip being talked about.
+        trip = _trip_from_context(context, region)
+        if trip:
+            return _watch_reply("yes", trip, lang, region_id, question, page, context)
+    if is_confused(question):                    # "bro what?": the last trip again, simply (no model call)
+        simple = _say_it_simply(context, lang, region_id, mode, map_point)
+        if simple:
+            return simple
 
     # Per-language switch (config/app.yaml): if off, the model's own words are never shown in this
     # language, and we skip the second model call that would only have written the intro sentence.
@@ -695,7 +719,9 @@ def chat(history: list[dict], lang: str, region_id: str, mode: str = "live", map
     # language: the owner asked for a conversational bot on 13 Nov 2026. Around a check, model_sentence still
     # decides, and it is off: there only reviewed templates are shown.
     question = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
-    return _compose(runs, final_text, lang, providers, context, region, model_words, question)
+    out = _compose(runs, final_text, lang, providers, context, region, model_words, question)
+    _offer_watch(out, lang, mode, page)
+    return out
 
 
 def ask_place(lang: str, region: dict, departure: str | None = None, spoken: bool = False) -> str:
@@ -717,6 +743,211 @@ _BYE = re.compile(r"\b(thanks|thank\s*(you|u)|thx|bye|goodbye|good\s*bye|see\s*(
 
 def says_goodbye(text: str) -> bool:
     return bool(_BYE.search(text or ""))
+
+
+# ---- watching a trip, offered in the conversation (owner, 13 Nov 2026) -------------------------------------
+# After a live CAUTION or UNSAFE answer the assistant asks "Want me to watch this trip and email you if the
+# forecast changes?", once per trip. The fisher's yes or no is read by code (no model call). A yes starts the same
+# watch as the card's button (app/watch.py: rechecked every 15 minutes until departure, any change of verdict is
+# sent), with the email this phone remembers, else the assistant asks for one. Templates only.
+_EMAIL_IN = re.compile(r"[^@\s,;:<>()\[\]\"']+@[^@\s,;:<>()\[\]\"']+\.[A-Za-z]{2,}")
+_YES = re.compile(r"\b(yes|yeah|yep|yup|ya|sure|ok|okay|please|go ahead|do it|watch( it)?|alright|of course"
+                  r"|same|that one|this one|that's (it|fine|right|correct)|correct|right|fine)\b"
+                  r"|ಹೌದು|ಹೂಂ|ಸರಿ|ಆಯ್ತು|ಬೇಕು|ಮಾಡಿ|ಓಕೆ|ಅದೇ|ಅದಕ್ಕೇ|نعم|ايوه|أيوه|إيه|ايه|اكيد|أكيد|تمام|طيب|ماشي|راقب|يا ?ريت"
+                  r"|نفسه|نفس البريد|هذا|هذاك", re.I)
+_NO = re.compile(r"\b(no|nope|nah|not now|don'?t|no thanks)\b|ಬೇಡ|ಇಲ್ಲ|(?<!\w)لا(?!\w)|لأ|مو لازم|ما ?[أا]بغى|ما بدي", re.I)
+
+
+# Asking for the watch or the email in so many words: "email me when the forecast changes", "can you still send me
+# the mail?", "watch it", "ಇಮೇಲ್ ಮಾಡಿ", "راقب الرحلة وارسل لي ايميل". (Not "ಮೇಲ್" alone: it is inside ಮೇಲೆ, "on";
+# not Arabic "ميل" alone: it is inside جميل, "beautiful".)
+_WATCH_ASK = re.compile(r"\b(e-?mail|mail|watch(?!\s*out)|notify|notification|remind|alert)\w*"
+                        r"|ಇಮೇಲ್|ಈಮೇಲ್|ಮೇಲ್ ಮಾಡಿ|ಕಣ್ಣಿಡ|ಗಮನಿಸ|ತಿಳಿಸಿ|ಎಚ್ಚರಿಸಿ"
+                        r"|بريد|ايميل|إيميل|الايميل|الإيميل|راقب|نبهني|نبّهني|ذكرني|ذكّرني|بلغني|بلّغني", re.I)
+# Questions ABOUT email or storage are not a request to be emailed ("do you keep my email?").
+_PRIVACY = re.compile(r"\b(store|stored|keep|kept|save|saved|remember|privacy|private|share|delete)\b"
+                      r"|ಉಳಿಸ|ನೆನಪಿಡ|ಖಾಸಗಿ|تحفظ|تخزن|يحفظ|خصوصية", re.I)
+
+
+def watch_answer(text: str, region: dict) -> str | None:
+    """'yes', 'no', or None when the message is something else (a new question goes to the chat as usual).
+    An email address counts as yes. A short yes counts ("yes please", "ಹೌದು"), and so does a longer reply that asks
+    for the email or the watch ("Yeah, please, uh, email me when the forecast changes" was once read as a question
+    about storage, 13 Nov 2026). A reply with a time or a harbour in it is a new question."""
+    text = (text or "").strip()
+    if _EMAIL_IN.search(text):
+        return "yes"
+    if not text or re.search(r"\d", text) or mentioned_harbours(text, region):
+        return None
+    words = len(text.split())
+    if words <= 6 and _NO.search(text):
+        return "no"
+    if words <= 15 and _WATCH_ASK.search(text) and not _NO.search(text) and not _PRIVACY.search(text):
+        return "yes"
+    return "yes" if words <= 6 and _YES.search(text) else None
+
+
+# "bro what?", "huh?", "I don't get it", "ಏನು?", "ಅರ್ಥ ಆಗಲಿಲ್ಲ", "ايش؟", "ما فهمت": confusion, not doubt. Once answered
+# with "how accurate is a forecast" (13 Nov 2026); now the last trip is said again, simply.
+# By voice it often comes as two phrases at once: "ಏನು? ಅರ್ಥ ಆಗ್ಲಿಲ್ಲ.", "وش؟ ما فهمت." (Scribe, 13 Nov 2026).
+_CONFUSED_PHRASE = (
+    r"what does that mean|what do you mean|come again|say (?:that|it) again|i don'?t (?:get|understand)"
+    r"(?: it| that| you)?|i'?m confused|confused|what|wut|wat|huh|eh"
+    r"|ಏನು ಹೇಳ್ತಿದ್ದೀರಾ|ಏನು ಹೇಳಿದ್ರಿ|ಏನಂದ್ರಿ|ಏನಪ್ಪಾ|ಏನು|ಏನ್|ಅರ್ಥ ಆಗಲಿಲ್ಲ|ಅರ್ಥ ಆಗ್ಲಿಲ್ಲ|ಅರ್ಥವಾಗಲಿಲ್ಲ|ಗೊತ್ತಾಗಲಿಲ್ಲ"
+    r"|ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ|ಮತ್ತೆ ಹೇಳಿ"
+    r"|ما فهمت شي|ما فهمتك|ما فهمت|مو فاهم|يعني ايش|يعني إيش|شو قصدك|ايش قصدك|وش قصدك|كيف يعني|عيدها|عيد"
+    r"|ايش|إيش|وشو|وش|شو|ماذا|هاه|عفوا|عفواً")
+_CONFUSED_FILL = r"bro|bruh|dude|man|sorry|uh+|um+|wait|ಅಣ್ಣ|ಸಾರ್|يا اخي|يا أخي|يا رجال"
+_CONFUSED = re.compile(rf"^\W*(?:(?:{_CONFUSED_FILL})\W+)*(?:{_CONFUSED_PHRASE})"
+                       rf"(?:\W+(?:{_CONFUSED_PHRASE}|{_CONFUSED_FILL}))*\W*$", re.I)
+
+
+_WHY = re.compile(r"\bwhy\b|ಯಾಕೆ|ಏಕೆ|ليش|لماذا|ليه|\bلم\b", re.I)
+
+# ---- spoken clock times, as ElevenLabs writes them (voice, 13 Nov 2026) --------------------------------------
+# Scribe often writes Kannada and Arabic hours as words: "ಎರಡು ಗಂಟೆಯಿಂದ ಐದು ಗಂಟೆಯವರೆಗೆ", "الساعة اتنين الظهر لين
+# الساعة خمسة", and once heard Gulf "لين" (until) as "Lane". The code that reads times looks for digits, so the
+# words for a clock hour are turned into digits first. Only clock hours: a word before ಗಂಟೆ/ತಾಸು, or after
+# "الساعة / لين / لحد / إلى / حتى". A length in hours is read the same way ("ಐದು ಗಂಟೆ" -> "5 ಗಂಟೆ").
+_KN_WORD_HOURS = {"ಹನ್ನೊಂದು": 11, "ಹನ್ನೆರಡು": 12, "ಒಂದು": 1, "ಎರಡು": 2, "ಮೂರು": 3, "ನಾಲ್ಕು": 4, "ಐದು": 5, "ಆರು": 6,
+                  "ಏಳು": 7, "ಎಂಟು": 8, "ಒಂಬತ್ತು": 9, "ಹತ್ತು": 10}
+_AR_WORD_HOURS = {
+    1: ("الواحدة", "واحدة", "وحدة", "واحد"), 2: ("الثانية", "اثنين", "اتنين", "ثنتين", "اثنتين"),
+    3: ("الثالثة", "ثلاثة", "تلاتة", "ثلاث", "تلات"), 4: ("الرابعة", "أربعة", "اربعة", "أربع", "اربع"),
+    5: ("الخامسة", "خمسة", "خمس"), 6: ("السادسة", "ستة", "ست"), 7: ("السابعة", "سبعة", "سبع"),
+    8: ("الثامنة", "ثمانية", "تمانية", "ثمان"), 9: ("التاسعة", "تسعة", "تسع"), 10: ("العاشرة", "عشرة", "عشر"),
+    11: ("الحادية عشرة", "إحدى عشرة", "احدى عشرة", "احدعش", "حداش"),
+    12: ("الثانية عشرة", "اثنا عشر", "اثنعش", "اطنعش")}
+_AR_WORD = {w: n for n, ws in _AR_WORD_HOURS.items() for w in ws}
+_KN_CLOCK = re.compile("(" + "|".join(_KN_WORD_HOURS) + r")\s*(?=[ಗಘ]ಂಟೆ|ತಾಸು)")
+_AR_CLOCK = re.compile(r"(الساعة|للساعة|لين|لحد|إلى|الى|حتى)\s+(" +
+                       "|".join(sorted(_AR_WORD, key=len, reverse=True)) + r")(?![\w])")
+
+
+def spoken_numbers(text: str) -> str:
+    """Clock hours said as words, written as digits: "ಐದು ಗಂಟೆಯವರೆಗೆ" -> "5 ಗಂಟೆಯವರೆಗೆ", "لين الساعة خمسة" ->
+    "لين الساعة 5". Also Gulf "لين" heard as "Lane"."""
+    if not text:
+        return text
+    text = re.sub(r"(?<=[؀-ۿ][\s،,])\s*\bLane\b", "لين", text)
+    text = _KN_CLOCK.sub(lambda m: f"{_KN_WORD_HOURS[m.group(1)]} ", text)
+    return _AR_CLOCK.sub(lambda m: f"{m.group(1)} {_AR_WORD[m.group(2)]}", text)
+
+
+def is_confused(text: str) -> bool:
+    return bool(_CONFUSED.search((text or "").strip()))
+
+
+def _say_it_simply(context: dict, lang: str, region_id: str, mode: str, map_point) -> dict | None:
+    """The trip being talked about, checked again by code and said in two or three sentences."""
+    c = context or {}
+    if not (c.get("place") and c.get("departure") and c.get("trip_hours")):
+        return None
+    res = service.assess_trip(region_id, c["place"], c["departure"], int(c["trip_hours"]), bool(c.get("given")),
+                              mode, map_point)
+    if not res.get("ok"):
+        return None
+    text = explain.t(lang, "chat.confused") + " " + explain.spoken_simple(res, lang)
+    return {"reply": text, "spoken": text, "chat_text": None, "provider": None, "context": context,
+            "cards": [{"result": res, "view": explain.render(res, lang)}]}
+
+
+def asks_to_watch(text: str) -> bool:
+    """With no offer open: "can you still send me the mail?", "watch my trip and email me" (13 Nov 2026)."""
+    text = (text or "").strip()
+    return (bool(_WATCH_ASK.search(text)) and not _PRIVACY.search(text) and not _NO.search(text)
+            and len(text.split()) <= 15)
+
+
+def _trip_from_context(context: dict | None, region: dict) -> dict | None:
+    """The trip being talked about, as a watch offer, when the fisher asks to be emailed about it later."""
+    c = context or {}
+    return _offered_trip({"watch_offer": {"place_id": c.get("place"), "departure": c.get("departure"),
+                                          "hours": c.get("trip_hours"), "given": bool(c.get("given"))}}, region)
+
+
+def _offered_trip(page: dict, region: dict) -> dict | None:
+    """The trip the last answer offered to watch, as the page sends it back, checked."""
+    f = (page or {}).get("watch_offer")
+    if not isinstance(f, dict):
+        return None
+    ids = {h["id"] for h in region["harbours"]}
+    hours = f.get("hours")
+    if (f.get("place_id") not in ids or not isinstance(f.get("departure"), str)
+            or not re.match(TIME_PATTERN, f["departure"]) or not isinstance(hours, int) or isinstance(hours, bool)
+            or not 1 <= hours <= load_app()["trip"]["max_hours"]):
+        return None
+    return {"place_id": f["place_id"], "departure": f["departure"][:16], "hours": hours, "given": bool(f.get("given")),
+            "live": True, "key": f"{f['place_id']}|{f['departure'][:16]}|{hours}",
+            "stage": "email" if f.get("stage") == "email" else "offer"}
+
+
+def _watch_reply(answer: str, trip: dict, lang: str, region_id: str, question: str, page: dict, context) -> dict:
+    """The conversation after "Want me to watch this trip?" (owner, 13 Nov 2026): yes -> ask which email (offering
+    the one this phone remembers); the email -> the server starts watching and sends the confirmation email, and
+    only then confirms. Every line is a reviewed template."""
+    from app import mailer
+    base = {"cards": [], "provider": None, "context": context, "chat_text": None}
+    if answer == "no":
+        text = explain.t(lang, "chat.watch_no")
+        return {**base, "reply": text, "spoken": text}
+    found = _EMAIL_IN.search(question or "")
+    remembered = (page or {}).get("watch_email")
+    remembered = remembered if isinstance(remembered, str) and _EMAIL_IN.fullmatch(remembered.strip()) else None
+    if not mailer.available():                  # cannot email from this server: say so, never pretend
+        text = explain.t(lang, "chat.watch_no_email")
+        return {**base, "reply": text, "spoken": text}
+    if found:
+        email = found.group(0)
+    elif trip["stage"] == "email" and remembered:       # "yes" to "Should I send them to you@...?"
+        email = remembered
+    else:                                       # ask, and keep the offer open for the address
+        asking = {**trip, "stage": "email"}
+        if remembered:
+            return {**base, "reply": explain.t(lang, "chat.watch_ask_known", email=remembered),
+                    "spoken": explain.t(lang, "say.watch_ask_known"), "watch_offer": asking}
+        text = explain.t(lang, "chat.watch_ask_email")
+        return {**base, "reply": text, "spoken": text, "watch_offer": asking}
+    return _start_watch(trip, email, lang, region_id, base)
+
+
+def _start_watch(trip: dict, email: str, lang: str, region_id: str, base: dict) -> dict:
+    """Start the email watch on the server, send the confirmation, and only then say it is set up."""
+    from app import watch
+    res = service.assess_trip(region_id, trip["place_id"], trip["departure"], trip["hours"], trip["given"], "live")
+    if not res.get("ok"):
+        text = explain.error_text(res, lang)
+        return {**base, "reply": text, "spoken": text}
+    w = {"region": region_id, "place": trip["place_id"], "departure_local": trip["departure"],
+         "trip_hours": trip["hours"], "trip_length_given_by_user": trip["given"], "lang": lang, "map_point": None}
+    wid = watch.add(None, w, res["verdict"], email)
+    if not watch.confirm(email, w, res):        # the confirmation could not be sent: no watch that cannot reach them
+        watch.remove(wid)
+        text = explain.t(lang, "chat.watch_mail_failed", email=email)
+        return {**base, "reply": text, "spoken": explain.t(lang, "say.watch_mail_failed"),
+                "watch_offer": {**trip, "stage": "email"}}
+    log.info("watching %s from the conversation (email)", trip["key"])
+    return {**base, "reply": explain.t(lang, "chat.watch_on", email=email), "spoken": explain.t(lang, "say.watch_on"),
+            "watching": {"id": wid, "key": trip["key"], "email": email, "departure": trip["departure"]}}
+
+
+def _offer_watch(out: dict, lang: str, mode: str, page: dict) -> None:
+    """After a live CAUTION or UNSAFE answer for one trip, ask once whether to watch it."""
+    cards = out.get("cards") or []
+    if mode != "live" or len(cards) != 1 or out.get("no_badge") or out.get("region"):
+        return
+    res, f = cards[0]["result"], cards[0]["view"]["trip_fields"]
+    if res.get("verdict") not in ("CAUTION", "UNSAFE") or not f.get("live") or f.get("place_id") == "map_point":
+        return
+    key = f"{f['place_id']}|{f['departure'][:16]}|{f['hours']}"
+    skip = (page or {}).get("watch_skip")
+    if isinstance(skip, list) and key in skip:  # offered before, declined or already watched
+        return
+    line = explain.t(lang, "chat.watch_offer")
+    out["reply"] += "\n\n" + line
+    out["spoken"] += " " + line
+    out["watch_offer"] = {"place_id": f["place_id"], "departure": f["departure"][:16], "hours": f["hours"],
+                          "given": bool(f["given"]), "live": True, "key": key}
 
 
 def _compose(runs: list, final_text: str, lang: str, providers: list, context, region: dict,
@@ -767,7 +998,9 @@ def _compose(runs: list, final_text: str, lang: str, providers: list, context, r
             msg = explain.t(lang, "error.past_time_at", time=explain.when(lang, res["departure"]),
                             hhmm=res["departure"][11:16])
             parts.append(msg)
-            said.append(msg)
+            # spoken: "Friday at 2 in the afternoon has already passed", not "Fri 13 Nov, 14:00" read aloud
+            said.append(explain.t(lang, "say.past_time_at", time=explain.say_time(lang, res["departure"]),
+                                  day=explain.say_day(lang, res["departure"])))
             if res.get("place"):                 # keep the harbour for the next answer
                 context = {"place": res["place"]}
             continue
@@ -801,7 +1034,7 @@ def _compose(runs: list, final_text: str, lang: str, providers: list, context, r
             continue
         if run["tool"] == "find_safest_time":
             # Speak only the windows; the example trip stays on the card.
-            safest_chat = explain.safest_bullets(res, lang)
+            safest_chat = True           # the trip on its card is only an example: no verdict badge
             parts.append(explain.safest_line(res, lang))
             said.append(" ".join(x for x in (explain.safest_spoken(res, lang),
                                              explain.t(lang, "say.disclaimer")) if x))
@@ -813,6 +1046,29 @@ def _compose(runs: list, final_text: str, lang: str, providers: list, context, r
                        "trip_hours": res["trip_hours"], "given": res["trip_length_given_by_user"]}
             continue
         shown.append(res)
+        before = context or {}
+        if (before.get("place") == res["place"]["id"] and before.get("departure") == res["departure"]
+                and before.get("trip_hours") == res["trip_hours"] and _YES.search(question or "")
+                and not _WHY.search(question or "") and len(runs) == 1):
+            # "yeah im out till 5" after the answer for exactly that trip: confirm it briefly instead of repeating
+            # the whole answer (owner's test, 13 Nov 2026). The card keeps everything.
+            line = explain.t(lang, "chat.same_trip") + " " + explain.spoken_simple(res, lang)
+            parts.append(line)
+            said.append(line)
+            cards.append({"result": res, "view": explain.render(res, lang)})
+            context = {"place": res["place"]["id"], "departure": res["departure"], "trip_hours": res["trip_hours"],
+                       "given": res["trip_length_given_by_user"]}
+            continue
+        if (before.get("place") == res["place"]["id"] and before.get("departure") == res["departure"]
+                and before.get("trip_hours") and before["trip_hours"] != res["trip_hours"]):
+            # The same trip with a new length ("yeah im out till 5" after an answer for 7): say what changed, so
+            # the answer does not look like the same one again (owner's test, 13 Nov 2026).
+            old_back = (datetime.fromisoformat(res["departure"]) + timedelta(hours=before["trip_hours"])).isoformat(
+                timespec="minutes")
+            change = explain.t(lang, "say.updated", new=explain.say_time(lang, res["return"]),
+                               old=explain.say_time(lang, old_back))
+            parts.append(change)
+            said.append(change)
         if res.get("covered"):                   # approximate times: say which whole hours were checked
             note = explain.t(lang, "chat.covered", **{"from": explain.when(lang, res["departure"]),
                                                        "to": explain.when(lang, res["return"])})
@@ -823,24 +1079,17 @@ def _compose(runs: list, final_text: str, lang: str, providers: list, context, r
         cards.append({"result": res, "view": explain.render(res, lang)})
         context = {"place": res["place"]["id"], "departure": res["departure"], "trip_hours": res["trip_hours"],
                    "given": res["trip_length_given_by_user"]}
-    # The chat bubble for a single trip: short bullet points (with the "which hours" note when times
-    # were approximate). The voice still reads "spoken".
-    chat_text = None
-    if shown:
+    # No bullet points (owner, 13 Nov 2026): the chat bubble and the voice-mode transcript show the same
+    # conversational answer the voice says ("spoken"); the card keeps the exact numbers.
+    if shown and asks_when_back(question):
+        # "What time do I come back by?": the return time comes first, and is said only once.
         last = shown[-1]
-        pre = [explain.t(lang, "chat.covered", **{"from": explain.when(lang, last["departure"]),
-                                                   "to": explain.when(lang, last["return"])})] if last.get("covered") else []
-        # "What time do I come back by?": the return time is the first line written (13 Nov 2026). The spoken
-        # answer already says "You'd be back around ...", so it is not said twice.
-        if asks_when_back(question):
-            pre.insert(0, explain.t(lang, "chat.b.back_by", back=explain._short_time(lang, last["return"],
-                                                                                    last["departure"][:10])))
-        chat_text = "\n".join(["• " + x for x in pre] + [explain.bullets(last, lang)])
-    elif safest_chat:
-        chat_text = safest_chat
+        back_line = explain.t(lang, "say.back", time=explain.say_at(lang, last["return"], last["departure"][:10], "around"))
+        said = [" ".join(s.replace(back_line, " ").split()) for s in said]
+        said.insert(0, explain.t(lang, "say.back_by", time=explain.say_time(lang, last["return"])))
     elif details_trip and asks_when_back(question):   # the model chose weather details: still say it first
         said.insert(0, explain.t(lang, "say.back_by", time=explain.say_time(lang, details_trip["return"])))
-    return {"reply": "\n\n".join(parts), "spoken": " ".join(said), "chat_text": chat_text,
+    return {"reply": "\n\n".join(parts), "spoken": " ".join(said), "chat_text": None,
             "cards": cards, "region": region_card, "no_badge": bool(safest_chat) and not shown,
             "provider": providers[-1], "context": context}
 

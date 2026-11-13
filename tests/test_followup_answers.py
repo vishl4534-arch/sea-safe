@@ -94,7 +94,7 @@ def test_tight_today_also_checks_tomorrow(monkeypatch):
     calls = fake_search(monkeypatch, tight_today(shown), roomy_tomorrow(shown))
     out = ask_today(monkeypatch)
     assert calls == ["2025-02-25", "2025-02-26"]
-    assert "• Tomorrow: SAFE to leave" in out["chat_text"] and "Tomorrow there are more SAFE times" in out["spoken"]
+    assert "Tomorrow there are more SAFE times" in out["spoken"]
 
 
 def test_no_safe_time_today_also_checks_tomorrow(monkeypatch):
@@ -108,7 +108,7 @@ def test_roomy_today_does_not_look_at_tomorrow(monkeypatch):
     calls = fake_search(monkeypatch, tight_today(shown, safe=(("2025-02-25T06:00", "2025-02-25T09:00"),)),
                         roomy_tomorrow(shown))
     out = ask_today(monkeypatch)
-    assert calls == ["2025-02-25"] and "Tomorrow" not in out["chat_text"]
+    assert calls == ["2025-02-25"] and "Tomorrow" not in out["spoken"]
 
 
 def test_tomorrow_no_better_says_nothing_more(monkeypatch):
@@ -116,7 +116,7 @@ def test_tomorrow_no_better_says_nothing_more(monkeypatch):
     worse = {**roomy_tomorrow(shown), "case": "caution_only", "safe_windows": [],
              "caution_windows": [("2025-02-26T00:00", "2025-02-26T19:00")]}
     fake_search(monkeypatch, tight_today(shown), worse)
-    assert "Tomorrow" not in ask_today(monkeypatch)["chat_text"]
+    assert "Tomorrow" not in ask_today(monkeypatch)["spoken"]
 
 
 def test_real_safest_answer_has_bullets_in_every_language():
@@ -131,7 +131,7 @@ def test_chat_shows_safer_times_as_bullets_without_a_badge(monkeypatch):
     monkeypatch.setattr(llm, "complete", scripted([tool_msg(
         "find_safest_time", place="dibba_al_hisn", day="today", trip_hours=4, trip_length_given_by_user=True)], []))
     out = chat.chat([{"role": "user", "content": "what time do you recommend I leave Dibba by?"}], "en", UAE, UAR)
-    assert out["chat_text"].startswith("• Dibba") and out["no_badge"] is True
+    assert out["chat_text"] is None and "Dibba" in out["spoken"] and out["no_badge"] is True
 
 
 def test_one_trip_answer_keeps_its_badge(monkeypatch):
@@ -147,8 +147,8 @@ def test_come_back_question_is_answered_first(monkeypatch):
         "assess_trip", place="umm_al_quwain", day="today", hour=13, minute=0, back_by_hour=-1, back_by_minute=0,
         back_day="same", trip_hours=4, trip_length_given_by_user=True)], []))
     out = chat.chat([{"role": "user", "content": "So I leave UAQ at 1. And what time do I come back by?"}], "en", UAE, UAR)
-    assert out["chat_text"].split("\n")[0] == "• Back by 17:00."
-    assert out["spoken"].count("back around 5 in the evening") == 1      # said once, not twice
+    assert out["spoken"].startswith("You'll be back at 5 in the evening.")
+    assert "You'd be back around" not in out["spoken"]                   # said once, not twice
 
 
 def test_come_back_question_answered_first_even_as_weather_details(monkeypatch):
@@ -168,7 +168,7 @@ def test_a_plain_trip_question_has_no_back_by_line(monkeypatch):
         "assess_trip", place="umm_al_quwain", day="today", hour=13, minute=0, back_by_hour=-1, back_by_minute=0,
         back_day="same", trip_hours=4, trip_length_given_by_user=True)], []))
     out = chat.chat([{"role": "user", "content": "UAQ at 1 for 4 hours"}], "en", UAE, UAR)
-    assert not out["chat_text"].startswith("• Back by")
+    assert not out["spoken"].startswith("You'll be back")
 
 
 def test_asks_when_back_in_each_language():

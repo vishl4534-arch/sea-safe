@@ -51,7 +51,9 @@ def test_chat_returns_bullets_for_one_trip_and_spoken_for_the_voice(monkeypatch)
         "assess_trip", place="umm_al_quwain", day="today", hour=16, minute=0, back_by_hour=18, back_by_minute=0,
         back_day="same", trip_hours=2, trip_length_given_by_user=True)], []))
     out = chat.chat([{"role": "user", "content": "UAQ at 4pm back by 6"}], "en", UAE, UAR)
-    assert out["chat_text"].startswith("• Umm Al Quwain: leaving") and "Be careful" not in out["spoken"]
+    # no bullet points any more (owner, 13 Nov 2026): the chat shows the conversational answer the voice says
+    assert out["chat_text"] is None and "•" not in out["spoken"] and "Be careful" not in out["spoken"]
+    assert out["spoken"].split(",")[0] in ("Okay", "Alright", "Right")
 
 
 def test_approximate_times_add_the_which_hours_line_to_the_bullets(monkeypatch):
@@ -59,7 +61,7 @@ def test_approximate_times_add_the_which_hours_line_to_the_bullets(monkeypatch):
         "assess_trip", place="umm_al_quwain", day="today", hour=16, minute=10, back_by_hour=18, back_by_minute=30,
         back_day="same", trip_hours=3, trip_length_given_by_user=True)], []))
     out = chat.chat([{"role": "user", "content": "UAQ around 4:10, back by 6:30"}], "en", UAE, UAR)
-    assert out["chat_text"].split("\n")[0].startswith("• Your times are not exactly on the hour")
+    assert out["chat_text"] is None and out["spoken"].startswith("Your times are not exactly on the hour")
 
 
 def test_lists_and_talk_have_no_bullets(monkeypatch):

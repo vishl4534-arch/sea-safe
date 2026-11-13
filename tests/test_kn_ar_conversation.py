@@ -102,9 +102,9 @@ def test_return_time_question_without_a_tool_is_checked_by_code(monkeypatch):
     monkeypatch.setattr(llm, "complete", scripted([{"role": "assistant", "content": "ستعود حوالي الساعة 19:00 اليوم."}], []))
     ctx = {"place": "dibba_al_hisn", "departure": "2025-02-25T14:00", "trip_hours": 5, "given": True}
     out = chat.chat([{"role": "user", "content": "امتى برجع؟"}], "ar", UAE, UAE_REPLAY, context=ctx)
-    assert "19:00" in out["chat_text"] and out["cards"]          # the time comes from the check
+    assert out["cards"] and out["cards"][0]["result"]["return"].endswith("T19:00")   # the time comes from the check
     assert "ستعود حوالي" not in out["reply"]                     # not the model's sentence
-    assert out["chat_text"].startswith("• " + explain.t("ar", "chat.b.back_by", back="19:00"))
+    assert out["spoken"].startswith(explain.t("ar", "say.back_by", time=explain.say_time("ar", "2025-02-25T19:00")))
 
 
 # ---- small talk: the model is told this language's blocked words ------------------------------------------
@@ -180,3 +180,99 @@ def test_no_tool_and_no_place_speaks_the_short_question(monkeypatch):
     monkeypatch.setattr(llm, "complete", scripted([{"role": "assistant", "content": "It looks safe!"}], []))
     out = chat.chat([{"role": "user", "content": "is it ok?"}], "en", KA, KA_REPLAY)
     assert out["spoken"] == "Which harbour will you leave from?" and "Karwar" in out["reply"]
+
+
+# ---- owner's test, 13 Nov 2026: "at 2 from 5", "yeah im out till 5", "bro what?" ------------------------------
+def _assess(**kw):
+    args = {"place": "dibba_al_hisn", "day": "today", "hour": 14, "minute": 0, "back_by_hour": -1, "back_by_minute": 0,
+            "back_day": "same", "trip_hours": 3, "trip_length_given_by_user": True, **kw}
+    return {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "assess_trip", "arguments": json.dumps(args)}}]}
+
+
+def test_the_prompt_reads_a_second_clock_time_as_the_return():
+    from app.config import region as reg
+    p = chat._system_prompt(reg(UAE), "en", UAE_REPLAY, None, None, None)
+    assert "at 2 from 5" in p and "never in" in p
+
+
+def test_a_changed_trip_says_what_changed(monkeypatch):
+    monkeypatch.setattr(llm, "complete", scripted([_assess(trip_hours=3)], []))
+    ctx = {"place": "dibba_al_hisn", "departure": "2025-02-25T14:00", "trip_hours": 5, "given": True}
+    out = chat.chat([{"role": "user", "content": "dibba, I'm out till 5"}], "en", UAE, UAE_REPLAY, context=ctx)
+    assert out["spoken"].startswith("I've updated your trip: back at 5 in the evening, not at 7 in the evening.")
+
+
+def test_confirming_the_same_trip_is_short(monkeypatch):
+    monkeypatch.setattr(llm, "complete", scripted([_assess(trip_hours=3)], []))
+    ctx = {"place": "dibba_al_hisn", "departure": "2025-02-25T14:00", "trip_hours": 3, "given": True}
+    out = chat.chat([{"role": "user", "content": "yeah im out till 5"}], "en", UAE, UAE_REPLAY, context=ctx)
+    assert out["spoken"].startswith("Yes, that's the trip I checked.") and "Stay safe" not in out["spoken"]
+    assert out["cards"]                                                   # the card keeps the full answer
+
+
+def test_why_about_the_same_trip_still_gives_the_full_answer(monkeypatch):
+    monkeypatch.setattr(llm, "complete", scripted([_assess(trip_hours=3)], []))
+    ctx = {"place": "dibba_al_hisn", "departure": "2025-02-25T14:00", "trip_hours": 3, "given": True}
+    out = chat.chat([{"role": "user", "content": "ok but why?"}], "en", UAE, UAE_REPLAY, context=ctx)
+    assert "Stay safe" in out["spoken"]
+
+
+@pytest.mark.parametrize("text", ["bro what?", "huh?", "what", "I don't get it", "wait what do you mean",
+                                  "ಏನು?", "ಅರ್ಥ ಆಗಲಿಲ್ಲ", "ايش؟", "ما فهمت"])
+def test_confusion_is_recognised(text):
+    assert chat.is_confused(text)
+
+
+@pytest.mark.parametrize("text", ["what about tomorrow?", "what time do I come back?", "are you sure?", "why?"])
+def test_real_questions_are_not_confusion(text):
+    assert not chat.is_confused(text)
+
+
+def test_confusion_gets_the_trip_again_simply_without_the_model(monkeypatch):
+    monkeypatch.setattr(llm, "complete", lambda *a: (_ for _ in ()).throw(AssertionError("no model call")))
+    ctx = {"place": "dibba_al_hisn", "departure": "2025-02-25T14:00", "trip_hours": 3, "given": True}
+    out = chat.chat([{"role": "user", "content": "bro what?"}], "en", UAE, UAE_REPLAY, context=ctx)
+    assert out["spoken"].startswith("Sorry, let me put it simply.") and "back around 5 in the evening" in out["spoken"]
+    assert out["cards"] and "Stay safe" not in out["spoken"]
+
+
+@pytest.mark.parametrize("lang", ["en", "kn", "ar"])
+def test_new_lines_exist_in_every_language(lang):
+    for k in ("say.updated", "chat.confused", "chat.same_trip"):
+        assert explain.t(lang, k, new="x", old="y") not in (k, "") and "{" not in explain.t(lang, k, new="x", old="y")
+
+
+# ---- the same fixes by voice (13 Nov 2026): what ElevenLabs Scribe actually writes for kn / ar ---------------
+@pytest.mark.parametrize("heard,want", [
+    ("ಮಲ್ಪೆಯಿಂದ ಮಧ್ಯಾಹ್ನ ಎರಡು ಗಂಟೆಯಿಂದ ಸಂಜೆ ಐದು ಗಂಟೆಯವರೆಗೆ ಹೋಗುತ್ತೇನೆ.",
+     "ಮಲ್ಪೆಯಿಂದ ಮಧ್ಯಾಹ್ನ 2 ಗಂಟೆಯಿಂದ ಸಂಜೆ 5 ಗಂಟೆಯವರೆಗೆ ಹೋಗುತ್ತೇನೆ."),
+    ("ಇಲ್ಲ, ಏಳು ಗಂಟೆಯವರೆಗೆ ಮಾಡಿ.", "ಇಲ್ಲ, 7 ಗಂಟೆಯವರೆಗೆ ಮಾಡಿ."),
+    ("بطلع من دبا الساعة اتنين الظهر لين الساعة خمسة.", "بطلع من دبا الساعة 2 الظهر لين الساعة 5."),
+    ("أيوه، أنا برا Lane 5.", "أيوه، أنا برا لين 5."),                     # Gulf "لين" (until) heard as "Lane"
+    ("لأ، خليها لين سبعة.", "لأ، خليها لين 7."),
+    ("الساعة الثانية عشرة", "الساعة 12"),
+    ("لمدة خمسة ساعات", "لمدة خمسة ساعات"),                                 # a length is left to stated_trip_hours
+    ("Lane 5 in English stays", "Lane 5 in English stays"),
+])
+def test_spoken_clock_hours_become_digits(heard, want):
+    assert chat.spoken_numbers(heard) == want
+
+
+@pytest.mark.parametrize("heard", ["ಏನು? ಅರ್ಥ ಆಗ್ಲಿಲ್ಲ.", "وش؟ ما فهمت.", "huh? what do you mean", "شو قصدك؟"])
+def test_confusion_in_two_phrases_as_scribe_writes_it(heard):
+    assert chat.is_confused(heard)
+
+
+@pytest.mark.parametrize("text", ["ಏನು ಮಾಡಲಿ?", "شو الجو بكرة؟", "وش الجو اليوم في دبا؟"])
+def test_questions_starting_with_what_are_not_confusion(text):
+    assert not chat.is_confused(text)
+
+
+@pytest.mark.parametrize("lang,said", [
+    ("en", "Leaving on Friday at 2 in the afternoon has already passed."),
+    ("kn", "ಶುಕ್ರವಾರ ಮಧ್ಯಾಹ್ನ 2 ಗಂಟೆಗೆ ಹೊರಡುವ ಸಮಯ ಈಗಾಗಲೇ ಕಳೆದುಹೋಗಿದೆ."),
+    ("ar", "الخروج يوم الجمعة الساعة 2 بعد الظهر قد مضى وقته.")])
+def test_a_past_time_is_said_aloud_not_read_as_a_date(lang, said):
+    d = "2026-11-13T14:00"
+    assert explain.t(lang, "say.past_time_at", time=explain.say_time(lang, d), day=explain.say_day(lang, d)).startswith(said)

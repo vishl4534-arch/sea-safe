@@ -7,6 +7,8 @@ const S = {
   clock: null, departure: null, tripHours: 6, tripGiven: false, pickOpen: false,
   place: null,            // {kind: "harbour", id} or {kind: "map_point", lat, lon}
   history: [], context: null,
+  watchOffer: null,       // the trip the last answer offered to watch ("Want me to watch this trip?"), until answered
+  watchSkip: [],          // trips already offered in this conversation: offered once only
   map: null, pins: {}, pointMarker: null, pinsLit: false, fitPending: false,
   tl: null,               // the 48-hour timeline: verdict per harbour per departure hour
   wind: null, windOn: true, play: null, commit: null,
@@ -1156,6 +1158,26 @@ function showAnswer(res, note) {
   addMsg("bot", text, card && !res.no_badge ? card.result.verdict : null, res.provider, card ? card.view : res.region || null);
   if (res.context !== undefined) S.context = res.context;
   if (card) showChatCard(card); else if (res.region) showRegionCard(res.region);
+  // "Want me to watch this trip?" stays open for the next message only. When the fisher gives the email, the
+  // server starts the watch itself and confirms; the page only remembers it (button and note on the card).
+  S.watchOffer = res.watch_offer || null;
+  if (res.watch_offer && !S.watchSkip.includes(res.watch_offer.key)) S.watchSkip.push(res.watch_offer.key);
+  if (res.watching) rememberWatch(res.watching);
+}
+
+// A watch the conversation started (13 Nov 2026): kept like one started from the card's button.
+function rememberWatch(w) {
+  const [place_id, departure, hours] = w.key.split("|");
+  const f = { place_id, departure, hours: Number(hours) };
+  store.set("watch_email", w.email);
+  const all = watchList();
+  all[watchKey(f)] = { id: w.id, until: new Date(departure).getTime() + 3600e3, email: w.email, push: false };
+  store.set("watches", JSON.stringify(all));
+  const open = S.view && S.view.trip_fields;
+  if (open && watchKey(open) === watchKey(f)) {
+    setWatchButton(document.querySelector("[data-act=watch]"), open);
+    watchNote(watchingHead(all[watchKey(f)]), watchingSub(all[watchKey(f)]));
+  }
 }
 
 // "Which harbours are safe at 2 pm?": every harbour by verdict. The map pins move to the same time;
@@ -1260,7 +1282,13 @@ function avatarHtml() { return '<img src="/static/img/logo.svg" alt="" width="28
 
 // What is selected on screen; the chat uses it for anything the question leaves out.
 function pageState() {
-  return { place: S.place && S.place.kind === "harbour" ? S.place.id : null };
+  // watch_*: the conversation can offer to watch a trip (13 Nov 2026). The server needs the trip it offered, the
+  // email this phone remembers from an earlier watch, and the trips not to offer again (offered, or watched).
+  const watched = Object.entries(watchList()).filter(([, w]) => w.until > Date.now())
+    .map(([k]) => k.split("|").slice(1).join("|"));
+  return { place: S.place && S.place.kind === "harbour" ? S.place.id : null,
+           watch_offer: S.watchOffer, watch_email: store.get("watch_email") || null,
+           watch_skip: [...S.watchSkip, ...watched] };
 }
 
 // ---------------------------------------------------------------- voice

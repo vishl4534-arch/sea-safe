@@ -390,6 +390,19 @@ def spoken(res: dict, lang: str) -> str:
     return " ".join(parts)
 
 
+def spoken_simple(res: dict, lang: str) -> str:
+    """The same answer in two or three sentences, for "huh?" / "bro what?" (13 Nov 2026): the trip said back
+    with the verdict, "don't go" when UNSAFE, and when they would be back. Templates only, like spoken()."""
+    day = res["departure"][:10]
+    pick = int(hashlib.sha1(f"{res['place']['id']}|{res['departure']}".encode()).hexdigest(), 16) % OPENERS
+    parts = [" ".join(t(lang, f"say.verdict_line.{res['verdict']}", opener=t(lang, f"say.opener.{pick}"),
+                        place_from=t(lang, f"place_from.{res['place']['id']}"), **_when_words(lang, res)).split())]
+    if res["verdict"] == "UNSAFE":
+        parts.append(t(lang, "say.advice.UNSAFE"))
+    parts.append(t(lang, "say.back", time=say_at(lang, res["return"], day, "around")))
+    return " ".join(parts)
+
+
 def _short_time(lang: str, ts: str | None, day: str) -> str:
     """'16:00' on the departure day, else the full 'Sat 14 Nov, 02:00'."""
     if not ts:
