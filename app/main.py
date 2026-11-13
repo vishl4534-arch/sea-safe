@@ -33,7 +33,9 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 @app.get("/")
 def index():
-    return FileResponse(ROOT / "static" / "index.html")
+    # no-cache: the browser always asks for the page again, so a new script version (?v=) reaches it at once.
+    # Without it, a browser kept an old page and so the old voice script after a fix (13 Nov 2026).
+    return FileResponse(ROOT / "static" / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/sw.js", include_in_schema=False)

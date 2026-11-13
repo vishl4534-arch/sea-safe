@@ -76,7 +76,8 @@ RULES
    rough (except in your name), and in {lang_name} never use any of these words, not even inside a longer word or a
    blessing: {banned}. Never write a number, a time or a date without a tool: for "when will I be back?" call
    assess_trip. If asked your name or who you are: you are "the Sea Safe assistant", here to help fishers
-   check a trip before they go.
+   check a trip before they go. Thanks and goodbyes ("thank you, bye", "ಧನ್ಯವಾದ", "شكراً، مع السلامة"): a short warm
+   goodbye such as "You're welcome. Check the official warnings before you go." Never "stay safe" or "safe trip".
 1. For ANY question about the sea, weather, safety, a time, or "why", call a tool. Never answer from your own knowledge.
    - "Can I go / is it safe / is it ok at <time>?" -> assess_trip at that time. In Kannada "ಹೋಗಬಹುದಾ?",
      "ಹೇಗಿದೆ?"; in Arabic "هل أقدر أطلع؟", "هل الخروج آمن؟" - these are ALWAYS assess_trip, also with "tomorrow night".
@@ -133,8 +134,9 @@ RULES
    trip_hours 3 (the longest), back_by_hour 18, back_by_minute 30 (the latest). The app checks every hour they cover.
 4. Place: match names loosely - spelling mistakes, town names and the "also called" names above all count
    ("Kundapura" -> gangolli, "Mangalore" -> mangaluru). If the user names no place, use the previous check's place,
-   else the harbour selected on screen. Only if there is still no place, reply without a tool (the app then asks
-   which harbour).
+   else the harbour selected on screen. Only if there is still no place, still call the tool with the time and
+   length they gave and any place: the app sees that no harbour was named and asks which one. NEVER choose a
+   harbour for the user yourself (not the first one in the list, not the most likely one).
    If the user DOES name a place but you cannot match it to a harbour above (a misheard or unknown name), NEVER
    use the previous place instead: reply without a tool, so the app asks which harbour.
 5. After a tool result, write ONE short sentence (max 15 words) in {lang_name}, even if the user wrote in another language. It only
@@ -467,8 +469,10 @@ def _covered_hours(args: dict, dep: str, hours: int, user_text: str) -> tuple[in
 
 
 def _run_tool(call: dict, region_id: str, mode: str, map_point, context: dict | None = None,
-              user_text: str = "", page: dict | None = None) -> dict:
-    """Run a tool call. The model gives day words and hours; code turns them into exact times and trip lengths."""
+              user_text: str = "", page: dict | None = None, said_places: set | None = None) -> dict:
+    """Run a tool call. The model gives day words and hours; code turns them into exact times and trip lengths.
+    said_places: the harbours the user has named in this conversation. A harbour the model chose that the user
+    never named (and that is not the previous check's or the one tapped on screen) is not used: the app asks."""
     name = call["function"]["name"]
     try:
         args = json.loads(call["function"]["arguments"] or "{}")
@@ -486,6 +490,11 @@ def _run_tool(call: dict, region_id: str, mode: str, map_point, context: dict | 
     if "place" in args and len(named) == 1 and args["place"] not in named and args["place"] != "map_point":
         log.warning("place corrected from %s to %s (named in the question)", args.get("place"), next(iter(named)))
         args["place"] = next(iter(named))
+    # "I'm leaving at 2 pm today, is that fine?" named no harbour, and a model answered for Mangaluru, the first
+    # one on the list (13 Nov 2026). Nothing is assumed: the harbour must come from the user, the previous check
+    # or the screen.
+    guessed = (said_places is not None and args.get("place") not in (None, "map_point")
+               and args["place"] not in said_places and not context.get("place") and not (page or {}).get("place"))
     page_given = {"given": bool((page or {}).get("trip_length_given_by_user")), "trip_hours": (page or {}).get("trip_hours")}
     try:
         part = stated_part_of_day(user_text)
@@ -507,6 +516,13 @@ def _run_tool(call: dict, region_id: str, mode: str, map_point, context: dict | 
         if problem:
             log.warning("trip refused (%s): %s %s", problem, name, args)
             res = {"ok": False, "error": problem, "place": args.get("place"), "departure": dep}
+        elif guessed:
+            log.warning("place %s was not named by the user: asking which harbour", args["place"])
+            known = stated or (int(args["trip_hours"]) if args.get("trip_length_given_by_user") else None)
+            if dep and int(args.get("back_by_hour", -1)) >= 0:
+                known = trip_from_return(dep, int(args["back_by_hour"]))
+            res = {"ok": False, "error": "need_place",
+                   "departure": dep if int(args.get("hour", -1)) >= 0 else None, "trip_hours": known}
         elif need:
             # Something is missing: ask, and keep what is known so the next answer completes the trip.
             known_hours = None if "length" in need else _trip_length(args, stated, context, page_given)[0]
@@ -610,6 +626,8 @@ def chat(history: list[dict], lang: str, region_id: str, mode: str = "live", map
     messages += [{"role": m["role"], "content": m["content"]} for m in history[-12:]
                  if m.get("role") in ("user", "assistant") and m.get("content")]
     question = next((m["content"] for m in reversed(history) if m.get("role") == "user"), "")
+    said_places = mentioned_harbours(" ".join(m["content"] for m in history[-12:]
+                                              if m.get("role") == "user" and m.get("content")), region)
 
     # Per-language switch (config/app.yaml): if off, the model's own words are never shown in this
     # language, and we skip the second model call that would only have written the intro sentence.
@@ -625,7 +643,7 @@ def chat(history: list[dict], lang: str, region_id: str, mode: str = "live", map
             messages.append({"role": "assistant", "content": message.get("content"),
                              "tool_calls": message["tool_calls"]})
             for call in message["tool_calls"]:
-                run = _run_tool(call, region_id, mode, map_point, context, question, page)
+                run = _run_tool(call, region_id, mode, map_point, context, question, page, said_places)
                 runs.append(run)
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": _for_model(run)})
             if not model_words:
@@ -680,17 +698,41 @@ def chat(history: list[dict], lang: str, region_id: str, mode: str = "live", map
     return _compose(runs, final_text, lang, providers, context, region, model_words, question)
 
 
-def ask_place(lang: str, region: dict) -> str:
-    """The only question the app asks: which harbour, naming them (templated, so it can be reviewed)."""
+def ask_place(lang: str, region: dict, departure: str | None = None, spoken: bool = False) -> str:
+    """Which harbour (templated, so it can be reviewed). With a departure the user already gave, it is said back
+    first ("Leaving Fri 13 Nov, 14:00, got it."). Written, the harbours are listed; spoken, the voice only asks
+    "Which harbour?" (owner, 13 Nov 2026: reading out all eight names was too long)."""
     names = explain.t(lang, "list.joiner_names").join(explain.t(lang, f"place.{h['id']}") for h in region["harbours"])
-    return explain.t(lang, "chat.ask_place", places=names)
+    if not departure:
+        return explain.t(lang, "say.ask_place") if spoken else explain.t(lang, "chat.ask_place", places=names)
+    when = (f"{explain.say_day(lang, departure)} {explain.say_time(lang, departure)}" if spoken
+            else explain.when(lang, departure))
+    return explain.t(lang, "say.ask_place_time" if spoken else "chat.ask_place_time", departure=when, places=names)
+
+
+# Thanks and goodbye, in the user's words: "thank you, bye", "ಧನ್ಯವಾದ", "ಹೋಗಿ ಬರುತ್ತೇನೆ", "شكراً", "مع السلامة".
+_BYE = re.compile(r"\b(thanks|thank\s*(you|u)|thx|bye|goodbye|good\s*bye|see\s*(you|ya)|cheers)\b|ಧನ್ಯವಾದ|ಥ್ಯಾಂಕ್ಸ್|"
+                  r"ಥ್ಯಾಂಕ್ಯೂ|ಬೈ(?!\w)|ಹೋಗಿ\s*ಬರ|ಹೋಗ್ಬರ್ತೀನಿ|شكر|مع\s*السلام|باي|في\s*أمان\s*الله|يعطيك\s*العافية", re.I)
+
+
+def says_goodbye(text: str) -> bool:
+    return bool(_BYE.search(text or ""))
 
 
 def _compose(runs: list, final_text: str, lang: str, providers: list, context, region: dict,
              model_words: bool = True, question: str = "") -> dict:
     if not runs:
-        text = guard(final_text, after_tool=False) or ask_place(lang, region)
-        return {"reply": text, "spoken": text, "cards": [], "provider": providers[-1] if providers else None,
+        text = spoken = guard(final_text, after_tool=False)
+        if not text:
+            # The model's own words were blocked (Gemini said goodbye with "Stay safe out there", 13 Nov 2026).
+            # A goodbye or a thank-you gets a reviewed goodbye, not the list of harbours.
+            if says_goodbye(question):
+                text = spoken = explain.t(lang, "chat.bye")
+            elif (context or {}).get("place"):
+                text = spoken = explain.t(lang, "chat.anything_else")
+            else:
+                text, spoken = ask_place(lang, region), ask_place(lang, region, spoken=True)
+        return {"reply": text, "spoken": spoken, "cards": [], "provider": providers[-1] if providers else None,
                 "context": context}
 
     # "Here is the check." only when there is a check to show, not in front of an error message.
@@ -705,6 +747,14 @@ def _compose(runs: list, final_text: str, lang: str, providers: list, context, r
     region_card = None
     for run in runs:
         res = run["result"]
+        if res.get("error") == "need_place":
+            # Which harbour? What was heard is said back first, and kept for the next answer.
+            parts.append(ask_place(lang, region, res.get("departure")))
+            said.append(ask_place(lang, region, res.get("departure"), spoken=True))
+            partial = {"departure": res.get("departure"), "trip_hours": res.get("trip_hours"),
+                       "given": True if res.get("trip_hours") else None}
+            context = {k: v for k, v in partial.items() if v is not None} or None
+            continue
         if res.get("error") == "need_details":
             worded = worded_question(res, lang, question)      # the model words it; code decided what to ask
             parts.append(need_text(res, lang, worded=worded))

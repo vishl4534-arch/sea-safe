@@ -10,10 +10,14 @@
 //   3. the "room level" is learnt while nobody speaks, and speech must be clearly louder than it;
 //   4. sound must last at least a quarter of a second to count, so a bang or a click is ignored.
 // Talking over her (13 Nov 2026, owner; layered like the Jessa voice agent's barge-in): while she speaks the
-// microphone is still measured. Speech clearly louder than usual (BARGE_OVER) for BARGE_MS stops her and is
-// recorded. If it was short (NOISE_MS), or the server hears no words or only her own words coming back through
-// the speaker, it was noise and she carries on from a second before where she stopped. Otherwise it is a new
-// question. Echo cancellation keeps most of her voice out of the microphone; the server's echo check the rest.
+// microphone is still measured. Background noise must not cut her off (owner, 13 Nov 2026), so:
+//   a. the noise level is also learnt WHILE she speaks (engine, wind, sea, fan), and talking over her must be
+//      clearly louder than that as well as louder than ordinary speech (BARGE_OVER), for BARGE_MS;
+//   b. that does not stop her: she goes quiet (DUCK) and keeps talking while the sound is recorded;
+//   c. only clear speech for CONFIRM_MS stops her; a short sound (NOISE_MS) brings her straight back up;
+//   d. the server then asks ElevenLabs what was said, with sound tags off: no words, or only her own words
+//      heard back through the speaker, means noise, and she simply carries on (from a second back if she had
+//      stopped). Real words are a new question. Echo cancellation keeps most of her voice out of the microphone.
 //
 // No dead air (13 Nov 2026, owner's choice; the idea comes from the Jessa voice agent's opener cache and
 // thinking sounds): she greets you the moment voice mode opens, says "Okay." or "Right." the instant you stop
@@ -34,11 +38,13 @@ const VoiceMode = (() => {
   const BARGE_MS = 300;          // talking over her this long stops her
   const BARGE_OVER = 2.2;        // ...and it must be this many times louder than ordinary speech detection
   const BARGE_MIN = 0.03;        // never stop her for anything quieter than this
-  const NOISE_MS = 500;          // less speech than this after stopping her: a cough or a bang, she carries on
+  const NOISE_MS = 500;          // less speech than this after she went quiet: a cough or a bang, she carries on
+  const CONFIRM_MS = 1000;       // this much clear speech over her: it is the fisher, she stops
+  const DUCK = 0.25;             // her volume while a sound over her is being checked
   const REWIND_S = 1;            // she carries on from this many seconds before where she stopped
 
   const V = { open: false, state: "idle", muted: false, stream: null, src: null, an: null, rec: null, chunks: [],
-              floor: 0.008, speechMs: 0, quietMs: 0, heard: false, recStart: 0, last: 0, raf: 0,
+              floor: 0.008, sfloor: 0.008, speechMs: 0, quietMs: 0, heard: false, recStart: 0, last: 0, raf: 0,
               audio: null, outAn: null, epoch: 0, buf: null,
               lines: {}, ready: {}, clip: null, ackNext: 0,
               saying: "", bargeMs: 0, resume: null };
@@ -148,16 +154,29 @@ const VoiceMode = (() => {
     speak(L.greeting.url, epoch, L.greeting.text);   // listens again when she has finished
   }
 
-  // Her voice moves the orb: the audio goes through an analyser on its way to the speakers.
+  // Her voice moves the orb: the audio goes through a volume control (for going quiet) and an analyser on
+  // its way to the speakers.
   function hook(a) {
     const ctx = S.voice.ctx;
     if (!ctx || ctx.state !== "running") return null;
     try {
-      const src = ctx.createMediaElementSource(a), an = ctx.createAnalyser(); an.fftSize = 1024;
-      src.connect(an); an.connect(ctx.destination);
+      const src = ctx.createMediaElementSource(a), gain = ctx.createGain(), an = ctx.createAnalyser();
+      an.fftSize = 1024;
+      src.connect(gain); gain.connect(an); an.connect(ctx.destination);
+      a._gain = gain;
       return an;
     } catch (e) { console.warn(e); return null; }
   }
+
+  // Her volume, changed smoothly (a sudden drop or jump would itself sound like a glitch).
+  function setVolume(a, v) {
+    if (a._gain) a._gain.gain.setTargetAtTime(v, S.voice.ctx.currentTime, 0.06);
+    else a.volume = v;
+  }
+
+  // How loud the fisher must be to talk over her: louder than ordinary speech, and louder than the noise
+  // heard while she speaks (her voice leaking back, engine, wind).
+  const bargeLevel = () => Math.max(BARGE_MIN, V.floor * OVER_ROOM * BARGE_OVER, V.sfloor * OVER_ROOM);
 
   // One short fixed line; resolves when it has finished (or could not play).
   function playClip(url, epoch) {
@@ -247,15 +266,21 @@ const VoiceMode = (() => {
     let level = 0;
     if (V.state === "speaking" && V.audio && V.an && !V.muted) {          // is the fisher talking over her?
       const r = rms(V.an);
-      if (r > Math.max(BARGE_MIN, V.floor * OVER_ROOM * BARGE_OVER)) V.bargeMs += dt;
-      else V.bargeMs = Math.max(0, V.bargeMs - dt * 2);
+      if (r > bargeLevel()) V.bargeMs += dt;
+      else {
+        V.bargeMs = Math.max(0, V.bargeMs - dt * 2);
+        V.sfloor = V.sfloor * 0.97 + Math.min(r, V.sfloor * 2) * 0.03;     // learn the noise while she speaks
+      }
       if (V.bargeMs >= BARGE_MS) interrupt();
     }
     if (V.state === "speaking" && V.outAn) level = Math.min(1, rms(V.outAn) * 4.5);
     else if (V.clip && V.outAn) level = Math.min(1, rms(V.outAn) * 4.5);     // "Okay." / "One moment."
     else if (V.an && (V.state === "listening")) {
       const r = rms(V.an);
-      const loud = r > Math.max(MIN_LEVEL, V.floor * OVER_ROOM);
+      // While she is still talking quietly, only sound over the talking-over level counts, so her own voice
+      // leaking into the microphone can never keep the recording going.
+      const ducked = V.resume && !V.resume.stopped;
+      const loud = r > (ducked ? bargeLevel() : Math.max(MIN_LEVEL, V.floor * OVER_ROOM));
       if (loud) { V.speechMs += dt; V.quietMs = 0; if (V.speechMs >= SPEECH_MS) V.heard = true; }
       else {
         if (V.heard) V.quietMs += dt;
@@ -263,6 +288,9 @@ const VoiceMode = (() => {
           V.speechMs = Math.max(0, V.speechMs - dt * 2);
           V.floor = V.floor * 0.97 + Math.min(r, V.floor * 2) * 0.03;      // learn the room while nobody speaks
         }
+      }
+      if (ducked && V.speechMs >= CONFIRM_MS) {                            // clearly the fisher: she stops
+        V.resume.a.pause(); V.resume.stopped = true;
       }
       level = V.heard ? Math.min(1, r * 6) * 0.6 : 0;
       const recFor = now - V.recStart;
@@ -274,26 +302,35 @@ const VoiceMode = (() => {
     V.raf = requestAnimationFrame(tick);
   }
 
-  // She is stopped and the fisher's words are recorded (the speech so far already counts as heard). Her line is
-  // kept, paused, in case it was only noise.
+  // Something is heard over her: she goes quiet but keeps talking, and the sound is recorded (the sound so far
+  // already counts as heard). She only stops if it turns out to be the fisher speaking (CONFIRM_MS, or the
+  // server hears real words).
   function interrupt() {
     const a = V.audio; if (!a) return;
     V.bargeMs = 0;
-    a.pause();
-    V.resume = { a, an: V.outAn, text: V.saying, epoch: V.epoch };
+    setVolume(a, DUCK);
+    V.resume = { a, an: V.outAn, text: V.saying, epoch: V.epoch, stopped: false };
     V.audio = null; V.outAn = null;
+    a.onended = () => { if (V.resume && V.resume.a === a) V.resume.ended = true; };   // finished while quiet
     listen();
     V.heard = true; V.speechMs = SPEECH_MS;
   }
 
-  // It was noise: she carries on from a second before where she stopped.
+  // It was noise: she comes back up to full volume (if she had stopped, from a second before where she
+  // stopped). If her line ended meanwhile, she just listens.
   function resumeSpeech() {
     const r = V.resume; V.resume = null;
-    if (!r || r.epoch !== V.epoch || !V.open) { listen(); return; }
+    if (!r || r.epoch !== V.epoch || !V.open || r.ended || r.a.ended) { listen(); return; }
     stopRecording(true);
     V.audio = r.a; V.outAn = r.an; V.bargeMs = 0;
-    try { r.a.currentTime = Math.max(0, r.a.currentTime - REWIND_S); } catch (e) { /* not seekable: from here */ }
-    r.a.play().catch(() => { if (V.audio === r.a) { V.audio = null; V.outAn = null; } listen(); });
+    const done = () => { if (V.audio !== r.a) return; V.audio = null; V.outAn = null; if (r.epoch === V.epoch && V.open) listen(); };
+    r.a.onended = done;
+    setState("speaking");
+    if (r.stopped) {
+      try { r.a.currentTime = Math.max(0, r.a.currentTime - REWIND_S); } catch (e) { /* not seekable: from here */ }
+      r.a.play().catch(() => { done(); });
+    }
+    setVolume(r.a, 1);
   }
 
   function rms(an) {

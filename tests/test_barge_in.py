@@ -53,3 +53,33 @@ def test_page_listens_while_she_speaks():
     js = (Path(ROOT) / "static" / "voicemode.js").read_text(encoding="utf-8")
     assert "BARGE_MS" in js and "function interrupt(" in js and "function resumeSpeech(" in js
     assert 'fd.append("interrupted"' in js
+
+
+# ---- background noise (owner, 13 Nov 2026): noise must not cut her off ------------------------------------
+def test_sound_tags_from_scribe_are_noise_not_a_question(fake_eleven, client, monkeypatch):  # noqa: F811
+    fake_eleven["transcript"] = "(engine noise) (wind)"
+    monkeypatch.setattr(llm, "complete", lambda *a: (_ for _ in ()).throw(AssertionError("no model call")))
+    assert post(client) == {"ok": True, "resume": True}
+    assert fake_eleven["stt"][0]["data"]["tag_audio_events"] == "false"
+
+
+def test_words_around_a_sound_tag_are_kept():
+    assert voice.without_sound_tags("wait (laughs) what about Malpe?") == "wait what about Malpe?"
+
+
+def test_page_ducks_her_instead_of_stopping_on_any_sound():
+    js = (ROOT / "static" / "voicemode.js").read_text(encoding="utf-8")
+    assert "setVolume(a, DUCK)" in js and "CONFIRM_MS" in js        # quiet first, stop only for clear speech
+    assert "V.sfloor" in js                                          # the noise is learnt while she speaks
+
+
+def test_speech_detection_else_belongs_to_the_loudness_check():
+    """13 Nov 2026: a check placed between `if (loud) {...}` and its `else` took the else over, so speech was
+    never detected and the microphone seemed dead. The `else` must follow the loudness line directly."""
+    import re
+    js = (ROOT / "static" / "voicemode.js").read_text(encoding="utf-8")
+    assert re.search(r"if \(loud\) \{[^\n]*\}\n\s*else \{", js)
+
+
+def test_page_is_never_kept_stale_by_the_browser(client):  # noqa: F811
+    assert client.get("/").headers["cache-control"] == "no-cache"

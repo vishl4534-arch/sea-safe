@@ -123,8 +123,8 @@ Every card also has a **Listen** button, which reads that card aloud.
 
 ## Language-model providers
 
-- **Fallback order.** Groq is tried first, at about 0.7 s per call. If it errors, is rate-limited or returns a malformed tool call, the app moves on to Gemini (`gemini-3.5-flash-lite`) automatically.
-- **Logging.** The server log shows which provider answered and how many model calls a question took, for example `LLM answered by groq (openai/gpt-oss-120b)`.
+- **Fallback order.** Gemini (`gemini-3.5-flash-lite`) is tried first, at about 0.9 s per call; it understood every test turn (68/68, against Groq's 66; `docs/model-comparison-2026-11-13.md`). If it errors, is rate-limited, returns a malformed tool call or is slow, the app moves on to Groq (`openai/gpt-oss-120b`) automatically.
+- **Logging.** The server log shows which provider answered and how many model calls a question took, for example `LLM answered by gemini (gemini-3.5-flash-lite)`.
 - **Settings.** The order, the model names and the reasoning effort are set in `.env`.
 - **Templates only, by default.** The model's own words never reach the user: `model_sentence: false` for every language in `config/app.yaml`. The model only reads the question and picks the tool, which is one call per question. Setting it to `true` for a language lets the model add one intro sentence, checked by a word guard.
 - **Timeout.** If a provider hasn't answered within 4 seconds (`LLM_TIMEOUT_SECONDS`), the next one is tried. If all fail, the chat says so, and the map and the colours keep working.

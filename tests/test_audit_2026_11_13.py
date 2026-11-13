@@ -124,7 +124,7 @@ def test_the_reply_says_which_hours_were_checked(monkeypatch, lang, region, mode
     monkeypatch.setattr(llm, "complete", scripted([tool_msg(
         "assess_trip", place=place, day="today", hour=16, minute=10, back_by_hour=18, back_by_minute=30,
         back_day="same", trip_hours=3, trip_length_given_by_user=True)], []))
-    out = chat.chat([{"role": "user", "content": "4:10, back by 6:30"}], lang, region, mode)
+    out = chat.chat([{"role": "user", "content": explain.t("en", f"place.{place}") + " 4:10, back by 6:30"}], lang, region, mode)
     r = out["cards"][0]["result"]
     assert (r["departure"][11:], r["return"][11:]) == ("16:00", "19:00")
     note = explain.t(lang, "chat.covered", **{"from": explain.when(lang, r["departure"]), "to": explain.when(lang, r["return"])})

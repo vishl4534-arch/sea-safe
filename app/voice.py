@@ -54,15 +54,26 @@ def transcribe(audio: bytes, filename: str, content_type: str, lang: str, keyter
         r = _http.post(f"{API}/speech-to-text", timeout=s.get("timeout_seconds", 20),
                        headers={"xi-api-key": _key()},
                        data={"model_id": s["stt_model"], "language_code": s["languages"][lang]["stt"],
+                             # Background sounds are not words: Scribe tags them by default ("(engine noise)",
+                             # "(wind)"), which once read as a question when the fisher's surroundings were loud.
+                             "tag_audio_events": "false",
                              **({"keyterms": keyterms} if keyterms else {})},
                        files={"file": (filename or "question.webm", audio, content_type or "audio/webm")})
     except httpx.HTTPError as e:
         raise VoiceError(f"speech-to-text failed: {e}") from e
     if r.status_code != 200:
         raise VoiceError(f"speech-to-text HTTP {r.status_code}: {r.text[:200]}")
-    text = (r.json().get("text") or "").strip()
+    text = without_sound_tags(r.json().get("text") or "")
     log.info("speech-to-text (%s, %s): %d characters", s["stt_model"], lang, len(text))
     return text
+
+
+_SOUND_TAG = re.compile(r"\([^()]*\)|\[[^\[\]]*\]")
+
+
+def without_sound_tags(text: str) -> str:
+    """'(wind) (engine)' -> '': a sound tag that still comes back is never taken for words."""
+    return re.sub(r"\s+", " ", _SOUND_TAG.sub(" ", text or "")).strip()
 
 
 BAD_KEYTERM = set("<>{}[]\\")

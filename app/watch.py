@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime
 from urllib.parse import urlparse
 
-from app import explain, mailer, service
+from app import emails, explain, mailer, service
 from app.config import ROOT, load_app
 
 log = logging.getLogger("seasafe.watch")
@@ -154,9 +154,9 @@ def _in_background(fn) -> None:
     threading.Thread(target=fn, name="watch-mail", daemon=True).start()
 
 
-def mail(to: str, subject: str, body: str) -> bool:
+def mail(to: str, subject: str, body: str, html: str | None = None) -> bool:
     try:
-        mailer.send(to, subject, body)
+        mailer.send(to, subject, body, html=html)
         return True
     except Exception as e:                           # not set up, refused, no connection: logged, never fatal
         log.warning("email not sent: %s", e)
@@ -172,7 +172,27 @@ def confirm(email: str, trip: dict, res: dict) -> bool:
                   hours=trip["trip_hours"], verdict=explain.t(lang, f"verdict.{res['verdict']}"),
                   minutes=cfg()["check_minutes"]),
         explain.t(lang, "chat.b.disclaimer"), explain.t(lang, "email.footer")])
-    return mail(email, explain.t(lang, "email.start.subject", place=place), body)
+    page = emails.html(lang, kicker=explain.t(lang, "email.start.kicker"), heading=place,
+                       badges=[(res["verdict"], explain.t(lang, f"verdict.{res['verdict']}"), False)],
+                       rows=_rows(lang, trip), lead=explain.t(lang, "email.start.next"),
+                       note=explain.t(lang, "chat.b.disclaimer"), footer=explain.t(lang, "email.footer"))
+    return mail(email, explain.t(lang, "email.start.subject", place=place), body, page)
+
+
+def _rows(lang: str, trip: dict) -> list:
+    return [(explain.t(lang, "email.row.leaving"), explain.when(lang, trip["departure_local"])),
+            (explain.t(lang, "email.row.length"), explain.t(lang, "trip.hours", hours=trip["trip_hours"])),
+            (explain.t(lang, "email.row.checks"), explain.t(lang, "email.checks_value", minutes=cfg()["check_minutes"]))]
+
+
+def change_email(lang: str, trip: dict, res: dict, old: str, new: str, payload: dict) -> tuple[str, str]:
+    """The email for a changed verdict: (plain text, html). Old verdict struck through, then the new one."""
+    text = payload["body"] + "\n\n" + explain.t(lang, "chat.b.disclaimer")
+    page = emails.html(lang, kicker=explain.t(lang, "email.change.kicker"), heading=explain.place_name(lang, res["place"]),
+                       badges=[(old, explain.t(lang, f"verdict.{old}"), True), (new, explain.t(lang, f"verdict.{new}"), False)],
+                       rows=_rows(lang, trip), lead=explain.t(lang, "email.change.next"),
+                       note=explain.t(lang, "chat.b.disclaimer"), footer=explain.t(lang, "email.footer"))
+    return text, page
 
 
 # ---- checking -----------------------------------------------------------------------------------------------
@@ -213,9 +233,10 @@ def check_all() -> int:
                     w["subscription"] = None
                 except Exception as e:
                     log.warning("watch %s: notification not sent: %s", w["id"], e)
-            if w.get("email") and mail(w["email"], payload["title"],
-                                       payload["body"] + "\n\n" + explain.t(lang, "chat.b.disclaimer")):
-                delivered = True
+            if w.get("email"):
+                text, page = change_email(lang, trip, res, w["verdict"], res["verdict"], payload)
+                if mail(w["email"], payload["title"], text, page):
+                    delivered = True
             if not w.get("subscription") and not w.get("email"):
                 continue                             # nobody left to tell
             if not delivered:

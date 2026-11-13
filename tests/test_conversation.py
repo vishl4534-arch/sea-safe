@@ -155,7 +155,8 @@ def test_safest_answer_speaks_only_the_windows(monkeypatch, lang, region, replay
         tool_msg("find_safest_time", place=place, day="today", trip_hours=6, trip_length_given_by_user=True),
         {"role": "assistant", "content": "Here are the departure times."},
     ], []))
-    out = chat.chat([{"role": "user", "content": "when is the best time today?"}], lang, region, replay)
+    out = chat.chat([{"role": "user", "content": f"when is the best time today from {explain.t('en', 'place.' + place)}?"}],
+                    lang, region, replay)
     res = service.find_safest_time(region, place, f"{day}T00:00", f"{day}T23:00", 6, True, replay, None)
     assert out["spoken"] == (f"{explain.safest_spoken(res, lang)} "
                              f"{explain.t(lang, 'say.disclaimer')}")
@@ -301,7 +302,7 @@ def test_a_bad_page_state_never_crashes_the_chat(monkeypatch, page):
     monkeypatch.setattr(llm, "complete", scripted([
         tool_msg("assess_trip", place="malpe", day="same", hour=-1, back_by_hour=-1, trip_hours=6,
                  trip_length_given_by_user=False)], []))
-    out = chat.chat([{"role": "user", "content": "is it safe?"}], "en", KA, KA_REPLAY, page=page)
+    out = chat.chat([{"role": "user", "content": "is it safe from Malpe?"}], "en", KA, KA_REPLAY, page=page)
     # a bad page state is dropped, so nothing is known: the app asks for the time and the length
     assert out["cards"] == [] and out["reply"] == chat.need_text({"need": ["time", "length"], "place": "malpe"}, "en")
     assert out["context"] == {"place": "malpe"}

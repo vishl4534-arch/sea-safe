@@ -12,6 +12,7 @@ import logging
 import os
 import smtplib
 from email.message import EmailMessage
+from pathlib import Path
 
 log = logging.getLogger("seasafe.mail")
 
@@ -33,8 +34,12 @@ def available() -> bool:
     return bool(_user() and _password())
 
 
-def _real_send(to: str, subject: str, body: str) -> None:
-    """One plain-text email. Raises MailError when it cannot be sent (not set up, refused, no connection)."""
+LOGO = Path(__file__).resolve().parent.parent / "static" / "img" / "logo-96.png"
+
+
+def _real_send(to: str, subject: str, body: str, html: str | None = None) -> None:
+    """One email: plain text, plus a designed HTML version when html is given (with the logo inside it as
+    cid:seasafe-logo, so it shows without "load images"). Raises MailError when it cannot be sent."""
     if not available():
         raise MailError("email is not set up (SMTP_USER and SMTP_PASSWORD in .env)")
     msg = EmailMessage()
@@ -42,6 +47,11 @@ def _real_send(to: str, subject: str, body: str) -> None:
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body)
+    if html:
+        msg.add_alternative(html, subtype="html")
+        if LOGO.exists():
+            msg.get_payload()[1].add_related(LOGO.read_bytes(), maintype="image", subtype="png", cid="<seasafe-logo>",
+                                             filename="sea-safe.png")
     try:
         with smtplib.SMTP_SSL(os.getenv("SMTP_HOST", "smtp.gmail.com"), int(os.getenv("SMTP_PORT", "465")),
                               timeout=15) as server:

@@ -371,13 +371,13 @@ Each was a mistake the model made at least once; code now does the part it got w
 - So numbers and verdicts can only come from code.
 
 **Providers:**
-- **Groq first, Gemini as automatic fallback** (decided 12 Nov 2026, for speed). Both are called through their OpenAI-compatible chat-completions endpoints, so there is one code path.
+- **Gemini first, Groq as automatic fallback** (owner, 13 Nov 2026, after a head-to-head test: Gemini 68/68 turns right, Groq 66/68; Groq is about 0.4 s faster on a typical turn but stalled once for 5 s; see `docs/model-comparison-2026-11-13.md`). Until then it was Groq first, chosen 12 Nov for speed. Both are called through their OpenAI-compatible chat-completions endpoints, so there is one code path.
 - **Fallback triggers:** an HTTP error, rate limiting (429), a malformed tool call, or **no answer within 4 seconds**. Any of these moves to the next provider.
   - **The 4 seconds are a hard cap** (`LLM_TIMEOUT_SECONDS`), timed by the app's own clock (fixed 12 Nov 2026). Before, it was httpx's timeout, which limits each network step, not the whole call, and Groq once took 9–11 s through it.
-  - **Early second provider.** If Groq has not answered after 1.5 s (`LLM_HEDGE_SECONDS`), Gemini is asked as well and the first good answer is used. Groq usually answers in 0.4–0.9 s, so this only costs a second call on the rare slow turn.
+  - **Early second provider.** If Gemini has not answered after 1.5 s (`LLM_HEDGE_SECONDS`), Groq is asked as well and the first good answer is used. Gemini answered within 1.4 s on 90% of test turns, so this only costs a second call on the rare slow turn.
 - **If every provider fails:** the chat says so plainly, and the map and verdicts keep working, because they never use the model. The message is "The chat is not working right now. The map and the colours still work: tap a harbour or the sea to check." 
 - **Settings live in `.env`:** provider order, model names, reasoning effort and keys.
-  - Defaults: Groq `openai/gpt-oss-120b` with `reasoning_effort=low`, then Gemini `gemini-3.5-flash-lite`.
+  - Defaults: Gemini `gemini-3.5-flash-lite`, then Groq `openai/gpt-oss-120b` with `reasoning_effort=low`.
 - **Speed (measured 12 Nov 2026).** With the model's sentence off (the default), each question makes **one model call**, to pick the tool. With it on, there is a second call to write the sentence.
 
 | Model | Time per call |
@@ -596,7 +596,7 @@ app/explain.py           render templated text from an assessment
 app/service.py           the callable service: fetch, then assess
 app/tools.py             tool schemas shared by chat and (later) voice
 app/voice.py             ElevenLabs speech-to-text and text-to-speech, audio cache, `python -m app.voice` check
-app/llm.py               Groq then Gemini client (order in .env) with 4-second timeout, fallback and logging
+app/llm.py               Gemini then Groq client (order in .env) with 4-second timeout, fallback and logging
 app/chat.py              chat loop, system prompt, guard
 app/main.py              FastAPI routes and static files
 static/                  index.html, app.js, style.css

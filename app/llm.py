@@ -1,4 +1,5 @@
-"""Language-model client. Groq first, Gemini as automatic fallback (order set in .env).
+"""Language-model client. Gemini first, Groq as automatic fallback (order set in .env; Gemini first since
+13 Nov 2026: it handled 68/68 test turns against Groq's 66, see docs/model-comparison-2026-11-13.md).
 Both are called through their OpenAI-compatible chat-completions endpoints, so there
 is one code path. Order, model names and keys come from .env."""
 import json
@@ -24,7 +25,7 @@ class LLMUnavailable(Exception):
 
 
 def provider_order() -> list[str]:
-    return [p.strip() for p in os.getenv("LLM_PROVIDERS", "groq,gemini").split(",") if p.strip() in PROVIDERS]
+    return [p.strip() for p in os.getenv("LLM_PROVIDERS", "gemini,groq").split(",") if p.strip() in PROVIDERS]
 
 
 def call_timeout() -> float:

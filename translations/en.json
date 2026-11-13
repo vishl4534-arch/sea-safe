@@ -194,6 +194,11 @@
   "say.trip_assumed": "I've assumed a {hours}-hour trip, so tell me if yours is different.",
   "say.safe_summary": "Waves up to {wave} metres, wind {wind} and gusts {gust} kilometres per hour, all under the caution lines.",
   "chat.ask_place": "I can check the sea for one harbour and one time. Which harbour do you want to leave from? {places}.",
+  "say.ask_place": "Which harbour will you leave from?",
+  "chat.ask_place_time": "Leaving {departure}, got it. Which harbour will you leave from? {places}.",
+  "say.ask_place_time": "Leaving {departure}, got it. Which harbour will you leave from?",
+  "chat.bye": "You're welcome. Before you go, check the official warnings too. Goodbye!",
+  "chat.anything_else": "Anything else you'd like me to check? Tell me the harbour, when you leave and for how long.",
   "list.joiner_names": ", ",
   "say.at.morning": "at {h} in the morning",
   "say.from.morning": "from {h} in the morning",
@@ -447,5 +452,13 @@
   "watch.email_off": "Email isn't set up on this server, so updates come only as phone notifications.",
   "watch.on_by_email": "Watching this trip until you leave. If the verdict changes, you'll get an email.",
   "watch.on_both": "Watching this trip until you leave. If the verdict changes, you'll get a notification and an email.",
-  "watch.cant": "Email isn't set up on this server and this browser can't get notifications, so this trip can't be watched here."
+  "watch.cant": "Email isn't set up on this server and this browser can't get notifications, so this trip can't be watched here.",
+  "email.start.kicker": "Watching your trip",
+  "email.change.kicker": "The forecast changed",
+  "email.row.leaving": "Leaving",
+  "email.row.length": "Trip",
+  "email.row.checks": "Checks",
+  "email.checks_value": "Every {minutes} minutes until you leave",
+  "email.start.next": "If the verdict changes, we'll email you straight away. To stop, open Sea Safe and tap \"Stop watching\".",
+  "email.change.next": "Open Sea Safe for the full answer and safer departure times."
 }

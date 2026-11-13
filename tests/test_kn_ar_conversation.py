@@ -122,3 +122,61 @@ def test_kannada_and_arabic_have_every_english_key():
         tr = json.load(open(f"translations/{lang}.json", encoding="utf-8"))
         en = json.load(open("translations/en.json", encoding="utf-8"))
         assert set(en) - set(tr) == set()
+
+
+# ---- owner's voice test, 13 Nov 2026: no harbour named, and a goodbye blocked by the guard ----------------
+@pytest.mark.parametrize("lang,region,mode,q,place", [
+    ("en", KA, KA_REPLAY, "Hello. I'm leaving at 2:00 p.m. today. Is that fine?", "mangaluru"),
+    ("kn", KA, KA_REPLAY, "ಇವತ್ತು ಮಧ್ಯಾಹ್ನ 2 ಗಂಟೆಗೆ ಹೊರಡುತ್ತೇನೆ, ಹೋಗಬಹುದಾ?", "mangaluru"),
+    ("ar", UAE, UAE_REPLAY, "بطلع اليوم الساعة 2 الظهر، تمام؟", "abu_dhabi_mina_zayed")])
+def test_a_harbour_the_user_never_named_is_not_used(monkeypatch, lang, region, mode, q, place):
+    monkeypatch.setattr(llm, "complete", scripted([{"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "assess_trip", "arguments": json.dumps({
+            "place": place, "day": "today", "hour": 14, "minute": 0, "back_by_hour": -1, "back_by_minute": 0,
+            "back_day": "same", "trip_hours": 6, "trip_length_given_by_user": False})}}]}], []))
+    out = chat.chat([{"role": "user", "content": q}], lang, region, mode)
+    assert out["cards"] == []                                            # nothing checked for a guessed harbour
+    from app.config import region as reg
+    assert out["reply"] == chat.ask_place(lang, reg(region), out["context"]["departure"])   # time said back, harbour asked
+    assert out["context"]["departure"].endswith("T14:00") and "place" not in out["context"]
+
+
+def test_the_harbour_named_next_completes_the_trip(monkeypatch):
+    ctx = {"departure": "2025-05-20T14:00"}
+    monkeypatch.setattr(llm, "complete", scripted([{"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "assess_trip", "arguments": json.dumps({
+            "place": "malpe", "day": "same", "hour": -1, "minute": 0, "back_by_hour": -1, "back_by_minute": 0,
+            "back_day": "same", "trip_hours": 3, "trip_length_given_by_user": True})}}]}], []))
+    out = chat.chat([{"role": "user", "content": "from Malpe, 3 hours"}], "en", KA, KA_REPLAY, context=ctx)
+    assert out["cards"] and out["cards"][0]["result"]["departure"] == "2025-05-20T14:00"
+
+
+@pytest.mark.parametrize("lang,q", [("en", "Okay, okay, fine. Thank you. I'll be leaving shortly. Bye."),
+                                    ("kn", "ಸರಿ, ಧನ್ಯವಾದ. ಹೋಗಿ ಬರುತ್ತೇನೆ"), ("ar", "تمام، شكراً. مع السلامة")])
+def test_a_blocked_goodbye_gets_a_goodbye_not_the_harbour_list(monkeypatch, lang, q):
+    monkeypatch.setattr(llm, "complete", scripted([{"role": "assistant", "content": "Goodbye! Stay safe out there."}], []))
+    region, mode = (UAE, UAE_REPLAY) if lang == "ar" else (KA, KA_REPLAY)
+    out = chat.chat([{"role": "user", "content": q}], lang, region, mode, context={"place": "malpe"})
+    assert out["reply"] == explain.t(lang, "chat.bye")
+
+
+def test_other_blocked_small_talk_after_a_check_offers_more_help(monkeypatch):
+    monkeypatch.setattr(llm, "complete", scripted([{"role": "assistant", "content": "It looks safe to me!"}], []))
+    out = chat.chat([{"role": "user", "content": "nice"}], "en", KA, KA_REPLAY, context={"place": "malpe"})
+    assert out["reply"] == explain.t("en", "chat.anything_else")
+
+
+@pytest.mark.parametrize("lang,region", [("en", KA), ("kn", KA), ("ar", UAE)])
+def test_the_voice_asks_which_harbour_without_reading_every_name(lang, region):
+    from app.config import region as reg
+    r = reg(region)
+    for departure in (None, "2025-05-20T14:00"):
+        said = chat.ask_place(lang, r, departure, spoken=True)
+        assert explain.t(lang, f"place.{r['harbours'][-1]['id']}") not in said      # no list of harbours aloud
+        assert explain.t(lang, f"place.{r['harbours'][-1]['id']}") in chat.ask_place(lang, r, departure)  # written: listed
+
+
+def test_no_tool_and_no_place_speaks_the_short_question(monkeypatch):
+    monkeypatch.setattr(llm, "complete", scripted([{"role": "assistant", "content": "It looks safe!"}], []))
+    out = chat.chat([{"role": "user", "content": "is it ok?"}], "en", KA, KA_REPLAY)
+    assert out["spoken"] == "Which harbour will you leave from?" and "Karwar" in out["reply"]

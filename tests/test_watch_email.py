@@ -22,7 +22,7 @@ def box(monkeypatch, tmp_path):
                 "departure": dep, "trip_hours": hours}
     monkeypatch.setattr(service, "assess_trip", fake_assess)
     monkeypatch.setattr(watch, "send", lambda sub, payload: state["pushed"].append(payload))
-    monkeypatch.setattr(mailer, "send", lambda to, subject, body: state["mailed"].append((to, subject, body)))
+    monkeypatch.setattr(mailer, "send", lambda to, subject, body, html=None: state["mailed"].append((to, subject, body)))
     monkeypatch.setattr(watch, "_in_background", lambda fn: fn())      # send at once in tests
     monkeypatch.setenv("SMTP_USER", "seasafe.sender@gmail.com")       # email is set up on this server
     monkeypatch.setenv("SMTP_PASSWORD", "test-app-password")

@@ -86,7 +86,8 @@ def test_transcribe_uses_scribe_and_the_screen_language(fake_eleven):
     text = voice.transcribe(b"audio", "q.webm", "audio/webm", "kn")
     assert text == fake_eleven["transcript"]
     sent = fake_eleven["stt"][0]
-    assert sent["data"] == {"model_id": load_app()["voice"]["stt_model"], "language_code": "kan"}
+    assert sent["data"] == {"model_id": load_app()["voice"]["stt_model"], "language_code": "kan",
+                            "tag_audio_events": "false"}          # background sounds are not words
     assert sent["headers"]["xi-api-key"] == "test-key"
 
 

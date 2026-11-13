@@ -58,7 +58,7 @@ def test_approximate_times_add_the_which_hours_line_to_the_bullets(monkeypatch):
     monkeypatch.setattr(llm, "complete", scripted([tool_msg(
         "assess_trip", place="umm_al_quwain", day="today", hour=16, minute=10, back_by_hour=18, back_by_minute=30,
         back_day="same", trip_hours=3, trip_length_given_by_user=True)], []))
-    out = chat.chat([{"role": "user", "content": "around 4:10, back by 6:30"}], "en", UAE, UAR)
+    out = chat.chat([{"role": "user", "content": "UAQ around 4:10, back by 6:30"}], "en", UAE, UAR)
     assert out["chat_text"].split("\n")[0].startswith("• Your times are not exactly on the hour")
 
 

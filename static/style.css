@@ -241,6 +241,16 @@ body.show-map .panel .scroll { display: none; }
   padding: 7px 14px; border-radius: var(--r-pill); background: var(--scrim); border: 1px solid var(--line); color: var(--mist);
   font-size: 13px; text-align: center; pointer-events: none; transition: opacity .5s var(--ease); }
 body.picked .map-hint { opacity: 0; }
+/* On a narrow map (a phone) the centred hint ran under the Wind button: give it its own row just below the
+   button, beside the zoom buttons. Logical insets, so it mirrors for Arabic. A longer hint (Kannada) wraps
+   and can sit over the top harbour pins, so on a phone it also fades away by itself after 8 seconds (it
+   ignores taps, so the pins under it still work). The map is only shown on the Map tab, so the 8 seconds
+   start when the fisher sees it. */
+@media (max-width: 640px) {
+  .map-hint { top: 62px; inset-inline: 64px 12px; max-width: none; padding: 6px 12px; font-size: 12px;
+    animation: hint-away .6s var(--ease) 8s forwards; }
+}
+@keyframes hint-away { to { opacity: 0; } }
 .map-status { position: absolute; z-index: 6; top: 56px; inset-inline: 16px; margin-inline: auto; width: fit-content; padding: 8px 14px;
   border-radius: var(--r-m); background: var(--swell); border: 1px solid var(--caution); font-weight: 500; font-size: 14px; }
 .tool { position: absolute; z-index: 5; top: 12px; inset-inline-end: 12px; display: inline-flex; align-items: center; gap: 8px; min-height: 40px;

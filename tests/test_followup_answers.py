@@ -86,7 +86,7 @@ def fake_search(monkeypatch, today, tomorrow):
 def ask_today(monkeypatch, day="today"):
     monkeypatch.setattr(llm, "complete", scripted([tool_msg(
         "find_safest_time", place="khor_fakkan", day=day, trip_hours=4, trip_length_given_by_user=True)], []))
-    return chat.chat([{"role": "user", "content": "when should I leave?"}], "en", UAE, UAR)
+    return chat.chat([{"role": "user", "content": "when should I leave from Khor Fakkan?"}], "en", UAE, UAR)
 
 
 def test_tight_today_also_checks_tomorrow(monkeypatch):
@@ -130,7 +130,7 @@ def test_real_safest_answer_has_bullets_in_every_language():
 def test_chat_shows_safer_times_as_bullets_without_a_badge(monkeypatch):
     monkeypatch.setattr(llm, "complete", scripted([tool_msg(
         "find_safest_time", place="dibba_al_hisn", day="today", trip_hours=4, trip_length_given_by_user=True)], []))
-    out = chat.chat([{"role": "user", "content": "what time do you recommend I leave by?"}], "en", UAE, UAR)
+    out = chat.chat([{"role": "user", "content": "what time do you recommend I leave Dibba by?"}], "en", UAE, UAR)
     assert out["chat_text"].startswith("• Dibba") and out["no_badge"] is True
 
 
@@ -146,7 +146,7 @@ def test_come_back_question_is_answered_first(monkeypatch):
     monkeypatch.setattr(llm, "complete", scripted([tool_msg(
         "assess_trip", place="umm_al_quwain", day="today", hour=13, minute=0, back_by_hour=-1, back_by_minute=0,
         back_day="same", trip_hours=4, trip_length_given_by_user=True)], []))
-    out = chat.chat([{"role": "user", "content": "So I leave at 1. And what time do I come back by?"}], "en", UAE, UAR)
+    out = chat.chat([{"role": "user", "content": "So I leave UAQ at 1. And what time do I come back by?"}], "en", UAE, UAR)
     assert out["chat_text"].split("\n")[0] == "• Back by 17:00."
     assert out["spoken"].count("back around 5 in the evening") == 1      # said once, not twice
 
@@ -155,7 +155,7 @@ def test_come_back_question_answered_first_even_as_weather_details(monkeypatch):
     monkeypatch.setattr(llm, "complete", scripted([tool_msg(
         "weather_details", place="umm_al_quwain", day="today", hour=13, minute=0, trip_hours=4,
         trip_length_given_by_user=True, detail="all")], []))
-    out = chat.chat([{"role": "user", "content": "And what time do I come back by?"}], "en", UAE, UAR)
+    out = chat.chat([{"role": "user", "content": "UAQ at 1. And what time do I come back by?"}], "en", UAE, UAR)
     assert out["spoken"].startswith("You'll be back at 5 in the evening.")
 
 
