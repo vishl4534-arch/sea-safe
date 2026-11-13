@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111113">
+  <script>
+    // Light or dark before the first paint: the remembered choice, else the phone's own setting (13 Nov 2026).
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem("theme"); } catch (e) { /* private mode */ }
+      if (t !== "light" && t !== "dark") t = window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+    })();
+  </script>
+  <title>Sea Safe</title>
+  <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="96x96" href="/static/img/logo-96.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-180.png">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&family=Lexend:wght@400;500;600;700&family=Noto+Sans+Arabic:wght@400;600;700&family=Noto+Sans+Kannada:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="/static/style.css?v=2026-11-13zg">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img class="brand-logo" src="/static/img/logo.svg" width="40" height="40" alt="">
+      <div class="brand-text">
+        <h1 data-t="app.title">Sea Safe</h1>
+        <p class="tagline" data-t="app.tagline"></p>
+      </div>
+    </div>
+    <button type="button" id="settings-toggle" class="icon-btn settings-toggle" aria-expanded="false" aria-controls="pickers">
+      <span data-icon="sliders"></span><span class="sr" data-t="ui.settings"></span>
+    </button>
+    <div id="pickers" class="pickers">
+      <div class="field"><span class="field-label" data-t="ui.region"></span><div id="region" class="seg" role="radiogroup"></div></div>
+      <div class="field"><span class="field-label" data-t="ui.language"></span><div id="lang" class="seg" role="radiogroup"></div></div>
+      <div class="field"><span class="field-label" data-t="ui.theme"></span><div id="theme" class="seg" role="radiogroup"></div></div>
+    </div>
+    <!-- always in view, next to the settings button (owner, 13 Nov 2026); on a phone, the "?" alone -->
+    <button type="button" id="how-open" class="btn ghost"><span data-icon="help"></span><span class="how-label" data-t="ui.how_we_decide"></span></button>
+  </header>
+
+  <div id="offline-tape" class="offline-tape" role="status" hidden></div>
+
+  <!-- phones: Answer and Map are two tabs; on a laptop both are side by side -->
+  <nav class="tabs" role="tablist">
+    <button type="button" id="tab-answer" role="tab" aria-selected="true"><span data-icon="message"></span><span data-t="ui.tab_answer"></span></button>
+    <button type="button" id="tab-map" role="tab" aria-selected="false"><span data-icon="map"></span><span data-t="ui.tab_map"></span></button>
+  </nav>
+
+  <main class="layout">
+    <!-- the stage: the sea, the harbours, the wind, and the 48 hours ahead -->
+    <section class="stage" aria-label="Map">
+      <div id="map"></div>
+      <p class="map-hint" data-t="ui.map_hint"></p>
+      <p id="map-status" class="map-status" role="status" hidden></p>
+      <button type="button" id="wind-toggle" class="tool" aria-pressed="true" hidden>
+        <span data-icon="wind"></span><span data-t="param.wind_speed"></span>
+        <span class="tool-key" aria-hidden="true"><i class="k-calm"></i><i class="k-caution"></i><i class="k-unsafe"></i></span>
+      </button>
+      <div id="timeline" class="timeline" hidden>
+        <button type="button" id="tl-play" class="icon-btn tl-play"><span data-icon="play"></span></button>
+        <div class="tl-main">
+          <div class="tl-head"><span class="tl-label" data-t="ui.departure"></span><strong id="tl-when"></strong></div>
+          <div class="tl-track">
+            <div id="tl-sky" class="tl-sky" aria-hidden="true"></div>
+            <div id="tl-ribbon" class="tl-ribbon" aria-hidden="true"></div>
+            <input id="tl-range" type="range" min="0" max="47" step="1" value="0">
+          </div>
+          <div id="tl-days" class="tl-days" aria-hidden="true"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="scroll" id="scroll">
+        <!-- the time and trip-length buttons are gone (13 Nov): the fisher says them, and the bot asks for
+             anything missing. Kept hidden because the map slider and "safer times" still set the departure. -->
+        <div class="when" hidden>
+          <div class="when-row">
+            <span class="label" id="dep-label" data-t="ui.departure"></span>
+            <div id="dep-chips" class="chips" role="radiogroup"></div>
+            <div class="menu wide" id="departure" hidden><button type="button" class="menu-btn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="dep-label dep-val"><span class="menu-val" id="dep-val"></span><span data-icon="chevron"></span></button><div class="menu-list" role="listbox" aria-labelledby="dep-label" hidden></div></div>
+          </div>
+          <div class="when-row">
+            <span class="label" data-t="ui.trip_length"></span>
+            <div id="trip-chips" class="chips" role="radiogroup"></div>
+          </div>
+        </div>
+
+        <!-- the conversation, like a messenger thread: answers on the left, the fisher's questions on the right -->
+        <section class="convo" aria-live="polite">
+          <!-- before the first question: one centred line, like "Where should we begin?" -->
+          <div id="welcome" class="hello">
+            <h2 data-t="ui.hello_title"></h2>
+            <p data-t="ui.hello_sub"></p>
+            <div id="examples" class="quick"></div>
+            <span id="usual" hidden><span id="usual-text"></span><button type="button" id="usual-forget" hidden></button></span>
+          </div>
+          <div id="chat-log" class="chat-log"></div>
+        </section>
+      </div>
+
+      <!-- the full answer: slides up over the chat from "See the full answer" (13 Nov 2026) -->
+      <div id="sheet" class="sheet" hidden>
+        <div class="sheet-backdrop" data-close></div>
+        <section class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+          <div class="sheet-head">
+            <span class="sheet-grab" aria-hidden="true"></span>
+            <h2 id="sheet-title" class="sr" data-t="ui.full_answer"></h2>
+            <button type="button" id="sheet-close" class="icon-btn sheet-x"></button>
+          </div>
+          <div id="sheet-body" class="sheet-body">
+            <article id="card" class="card" hidden></article>
+          </div>
+        </section>
+      </div>
+
+      <!-- the voice dock: the main way to ask; typing is the fallback -->
+      <div class="dock">
+        <!-- one input: type, or tap the round voice button; it becomes a send arrow once there is text -->
+        <form id="chat-form" class="composer">
+          <input id="chat-input" autocomplete="off" data-t-placeholder="ui.ask_placeholder">
+          <button type="submit" class="send" hidden><span data-icon="send"></span><span class="sr" data-t="ui.send"></span></button>
+          <button type="button" id="mic" class="mic" hidden>
+            <span data-icon="audio"></span>
+            <span class="mic-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="mic-label sr"></span>
+          </button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="how" class="how">
+    <div class="how-head">
+      <h2 data-t="ui.how_we_decide"></h2>
+      <button type="button" id="how-close" class="btn ghost" data-t="ui.close"></button>
+    </div>
+    <div id="how-body"></div>
+  </dialog>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="/static/wind.js?v=2026-11-13p"></script>
+  <script src="/static/app.js?v=2026-11-13ze"></script>
+  <script src="/static/voicemode.js?v=2026-11-13u"></script>
+</body>
+</html>

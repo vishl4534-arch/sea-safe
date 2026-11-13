@@ -1,0 +1,157 @@
+# Sea Safe app configuration. Regions, harbours, languages, forecast window,
+# trip length and replay days live here, not in code.
+# Switch anything off with `enabled: false`; nothing else needs to change.
+# Place names (all languages) live in translations/*.json under "place.<id>".
+# aliases: other names people say for a harbour (town names, spellings); used only to understand questions.
+
+forecast:
+  window_hours: 48            # how far ahead the app will assess
+  live_cache_minutes: 30      # reuse live data younger than this
+  stale_after_hours: 6        # older cached data counts as missing -> CAUTION
+  big_sea_cell_distance_km: 5 # above this, the sea-cell distance is shown prominently
+  max_sea_cell_distance_km: 20  # map clicks further than this from wave data are refused
+
+# The map. A free vector style from OpenFreeMap (no key); the page recolours it so the sea leads.
+map_style: "https://tiles.openfreemap.org/styles/fiord"
+
+# Wind picture: moving streaks on the map. DISPLAY ONLY, never used for a verdict (app/windfield.py).
+# One Open-Meteo Forecast call per region for a grid of points. The areas and the step are our own
+# choice: wide enough to fill the map around the harbours, coarse enough to stay one small request.
+wind_picture:
+  enabled: true
+  step_degrees: 0.5
+  areas:
+    karnataka: {west: 71.5, south: 11.5, east: 76.5, north: 16.5}
+    uae:       {west: 51.5, south: 22.5, east: 58.5, north: 27.5}
+
+trip:
+  default_hours: 6            # ASSUMPTION, not sourced (docs/design.md section 4)
+  quick_choices: [4, 6, 8, 12]
+  max_hours: 24
+
+models:
+  live:
+    marine_api: "https://marine-api.open-meteo.com/v1/marine"
+    marine_model: ecmwf_wam
+    weather_api: "https://api.open-meteo.com/v1/forecast"
+    weather_model: best_match
+  replay:
+    marine_api: "https://marine-api.open-meteo.com/v1/marine"
+    marine_model: meteofrance_wave
+    weather_api: "https://historical-forecast-api.open-meteo.com/v1/forecast"
+    weather_model: best_match
+  replay_coarse:
+    marine_api: "https://marine-api.open-meteo.com/v1/marine"
+    marine_model: era5_ocean
+    weather_api: "https://archive-api.open-meteo.com/v1/archive"
+    weather_model: best_match
+  elevation_api: "https://api.open-meteo.com/v1/elevation"
+
+# model_sentence: false (default for all, decided 12 Nov 2026) = around a check the model's own words are never
+# shown; replies use reviewed templates only, and the second model call is skipped.
+# Small talk with no check ("hi, I'm Vish") is always the model's own short reply, through the guard
+# (owner request, 13 Nov 2026); the questions for missing trip details are reviewed templates.
+# true = the model adds one intro sentence, checked by the word guard in app/chat.py
+# (a word blocklist cannot catch every way of implying safety, which is why it is off).
+languages:
+  en: {enabled: true, name: "English", english_name: "English", dir: ltr, model_sentence: false}
+  kn: {enabled: true, name: "ಕನ್ನಡ", english_name: "Kannada", dir: ltr, model_sentence: false}
+  ar: {enabled: true, name: "العربية", english_name: "Arabic", dir: rtl, model_sentence: false}
+
+# model_questions (owner, 13 Nov 2026): when a trip detail is missing, code decides what to ask and the model
+# only words the question (guarded: no digits, no verdict or safety words; else the reviewed template).
+model_questions: true
+
+regions:
+  karnataka:
+    enabled: true
+    timezone: Asia/Kolkata
+    languages: [en, kn]
+    map: {center: [13.8, 74.4], zoom: 8}
+    official_warnings:
+      - {name: "India Meteorological Department (IMD)", url: "https://mausam.imd.gov.in/"}
+      - {name: "INCOIS ocean state forecast", url: "https://incois.gov.in/portal/osf/osf.jsp"}
+    # Emergency numbers at sea: only numbers the owner has approved, each with its source.
+    # Approved 13 Nov 2026.
+    emergency_contacts:
+      - {name_key: contact.coast_guard_in, number: "1554",
+         source: "Indian Coast Guard, toll-free search and rescue for fishermen at sea: https://indiancoastguard.gov.in/sites/default/files/202209050604245756604MARITIME.pdf"}
+    replay: [karnataka_2025_05_20, karnataka_tauktae_2021_05_15]
+    harbours:
+      - {id: mangaluru, lat: 12.8598, lon: 74.8326, enabled: true, aliases: ["Mangalore", "Bunder", "Old Port", "Mangaluru Bunder", "ಮಂಗಳೂರ", "ಬಂದರ್"]}
+      - {id: malpe,     lat: 13.3476, lon: 74.6994, enabled: true, aliases: ["Udupi", "Malpe Bunder", "ಉಡುಪಿ"]}
+      - {id: gangolli,  lat: 13.6333, lon: 74.6750, enabled: true, aliases: ["Kundapura", "Kundapur", "Coondapoor", "Gangoli", "Gangolly", "ಕುಂದಾಪುರ", "ಕುಂದಾಪುರದ", "ಗಂಗೊಳ್ಳಿ"]}
+      - {id: bhatkal,   lat: 13.9668, lon: 74.5353, enabled: true, aliases: ["Bhatkala", "ಭಟ್ಕಳ"]}
+      - {id: honnavar,  lat: 14.2762, lon: 74.4406, enabled: true, aliases: ["Honavar", "Honnavara", "ಹೊನ್ನಾವರ"]}
+      - {id: tadri,     lat: 14.5245, lon: 74.3551, enabled: true, aliases: ["Tadadi", "Tadri port", "Kumta", "ತದ್ರಿ", "ಕುಮಟಾ"]}
+      - {id: belekeri,  lat: 14.7079, lon: 74.2574, enabled: true, aliases: ["Belikeri", "Belekere", "Ankola", "ಅಂಕೋಲಾ", "ಬೆಲೆಕೇರಿ"]}
+      - {id: karwar,    lat: 14.8009, lon: 74.1125, enabled: true, aliases: ["Baithkol", "Baitkol", "Karawara", "ಬೈತ್ಕೋಲ್"]}
+
+  uae:
+    enabled: true
+    timezone: Asia/Dubai
+    languages: [en, ar]
+    map: {center: [25.2, 55.4], zoom: 8}
+    official_warnings:
+      - {name: "UAE National Centre of Meteorology (NCM)", url: "https://www.ncm.gov.ae/"}
+    emergency_contacts:            # approved 13 Nov 2026
+      - {name_key: contact.coast_guard_ae, number: "996",
+         source: "UAE Government portal, Handling emergencies (Coastguard 996): https://beta.government.ae/information-and-services/justice-safety-and-the-law/handling-emergencies"}
+    replay: [uae_2025_02_25]
+    harbours:
+      - {id: abu_dhabi_mina_zayed, lat: 24.5143, lon: 54.3759, enabled: true, aliases: ["Abu Dhabi", "Mina Zayed", "ابوظبي", "أبو ظبي", "ابو ظبي", "ميناء زايد"]}
+      - {id: dubai_umm_suqeim,     lat: 25.1724, lon: 55.2135, enabled: true, aliases: ["Umm Suqeim", "Umm Suqueim", "ام سقيم"]}
+      - {id: dubai_al_hamriya,     lat: 25.3018, lon: 55.3339, enabled: true, aliases: ["Hamriya", "Hamriyah", "Deira", "الحمرية"]}
+      - {id: ajman,                lat: 25.4005, lon: 55.4535, enabled: true, aliases: ["Ajman creek"]}
+      - {id: umm_al_quwain,        lat: 25.5559, lon: 55.5381, enabled: true, aliases: ["UAQ", "Umm al Qaiwain", "Al Naqqa", "Al Meydan", "Al Maidan", "ام القيوين", "القيوين"]}   # Al Naqqa / Al Meydan port, west shore
+      - {id: rak_al_rams,          lat: 25.8826, lon: 56.0278, enabled: true, aliases: ["Ras Al Khaimah", "RAK", "Al Rams", "Rams", "راس الخيمة"]}
+      - {id: dibba_al_hisn,        lat: 25.6197, lon: 56.2749, enabled: true, aliases: ["Dibba", "Diba", "دبا"]}
+      - {id: khor_fakkan,          lat: 25.3482, lon: 56.3627, enabled: true, aliases: ["Khorfakkan", "Khor Fakan", "خور فكان"]}
+      - {id: fujairah,             lat: 25.1017, lon: 56.3595, enabled: false, aliases: ["Fujairah", "Rughaylat", "الفجيرة"]}  # dropped: fishermen's port not confirmed
+      - {id: dubai_jumeirah,       lat: 25.2103, lon: 55.2445, enabled: false, aliases: ["Jumeirah"]}  # replacement, only if list < 7
+
+replays:
+  karnataka_2025_05_20:
+    date: "2025-05-20"
+    models: replay
+    coarse: false
+  karnataka_tauktae_2021_05_15:
+    date: "2021-05-15"
+    models: replay_coarse
+    coarse: true                # ~50 km grid: neighbouring harbours share numbers
+  uae_2025_02_25:
+    date: "2025-02-25"
+    models: replay
+    coarse: false
+
+replay_clock:
+  start_hour: 4               # replay "now" = 04:00 local on the replay date
+  default_departure_hour: 5
+
+# Voice (ElevenLabs). Speech-to-text turns the question into text; the chat and the code decide
+# the answer; text-to-speech reads the reviewed spoken templates word for word.
+# Needs ELEVENLABS_API_KEY in .env. Switch off with enabled: false: the map and typed chat keep working.
+voice:
+  enabled: true
+  stt_model: scribe_v3            # ElevenLabs Scribe v3: writes times as digits ("5:00"); ~1.5 s
+  tts_model: eleven_v4_turbo      # v4 Turbo: Kannada, Arabic, English; ~1.6 s per sentence (v4 ~3.3 s, v3 ~4 s)
+  output_format: mp3_44100_64     # small files, fine for speech
+  timeout_seconds: 20
+  max_record_seconds: 20
+  max_spoken_chars: 1500          # longer answers are not sent to text-to-speech (credit guard)
+  # stt / tts: the language codes ElevenLabs expects (ISO 639-3 for speech-to-text, 639-1 for speech)
+  languages:
+    en: {stt: eng, tts: en, voice_id: l69wlWTZVIKv0UxMucTn, voice_name: "Riya Rao - Warm Professional"}
+    kn: {stt: kan, tts: kn, voice_id: z5dCxveFRvWeqsaKgMqe, voice_name: "Krishna Priya M - Confident News Anchor"}
+    ar: {stt: ara, tts: ar, voice_id: QsV9PCczMIklRM6xLPAS, voice_name: "Heba Mansuri - Arabic Customer Care"}
+
+# Watch this trip, on the server (owner, 13 Nov 2026): the trip is checked again every check_minutes until departure;
+# a Web Push notification is sent only when the verdict changes. Notifications go only to these push services.
+# vapid_subject: the contact address the push services may use (set by the owner, 13 Nov 2026).
+watch:
+  enabled: true
+  check_minutes: 15
+  max_watches: 500
+  ttl_seconds: 3600
+  vapid_subject: "mailto:v1shst0ck55@gmail.com"
+  push_hosts: [fcm.googleapis.com, push.services.mozilla.com, web.push.apple.com, notify.windows.com]

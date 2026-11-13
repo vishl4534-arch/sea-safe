@@ -1,0 +1,92 @@
+# Sea Safe thresholds. Approved by the project owner on 12 Nov 2026.
+# The verdict is computed ONLY from these values, by app/assessment.py.
+# Every value carries its source document, link and paragraph. These are shown
+# on the "How we decide" panel exactly as written here.
+
+boat_class: small_open_boat_under_10m   # text key; wording lives in translations/*.json
+
+# Our own rule, not from any source: a value within this fraction of a CAUTION
+# line (on the safe side) gives CAUTION, explained as "close to the caution line".
+near_line_margin: 0.10
+
+sources:
+  fao_2012:
+    title: "FAO/ILO/IMO, Safety Recommendations for Decked Fishing Vessels of Less than 12 metres in Length and Undecked Fishing Vessels (2012)"
+    url: "https://www.fao.org/docrep/017/i3108e/i3108e.pdf"
+  wmo_306:
+    title: "WMO-No. 306, Manual on Codes, Volume I.1 (2010 edition)"
+    url: "https://www.vedur.is/gogn/athuganir/wmo/files/306_Vol_I.1_2010_en.pdf"
+  wmo_558:
+    title: "WMO-No. 558, Manual on Marine Meteorological Services, Volume I (2012, updated 2018)"
+    url: "https://www.nhc.noaa.gov/pdf/global-marine-weather-policies.pdf"
+  wmo_471:
+    title: "WMO-No. 471, Guide to Marine Meteorological Services (2018)"
+    url: "https://www.nhc.noaa.gov/pdf/global-marine-weather-services-guide.pdf"
+  imd_marine:
+    title: "India Meteorological Department, Marine Weather Forecasting (IMD training presentation, WMO 2022)"
+    url: "https://severeweather.wmo.int/TCFW/NewDelhi_Training2022/5_Marine-Weather-Forecasting-Amit-BhardwajF.pdf"
+
+# direction: "above" = higher is worse; "below" = lower is worse; "codes" = listed codes trigger.
+parameters:
+  wave_height:
+    unit: m
+    direction: above
+    caution:
+      value: 1.25
+      source: wmo_306
+      where: "Code table 3700 (State of the sea), p. I.1-C-105"
+      note: "'Moderate' sea begins at a significant wave height of 1.25 m. IMD uses the same scale."
+    unsafe:
+      value: 2.0
+      source: fao_2012
+      where: "Para 1.2.14.3, Design category C"
+      note: "'...significant wave heights up to 2 m and a typical steady wind force of Beaufort Force 6 (12 m/s) or less.' UNSAFE starts AT the limit (our reading; see docs/design.md 3.1)."
+
+  wind_speed:
+    unit: km/h
+    direction: above
+    caution:
+      value: 37
+      source: imd_marine
+      where: "Fishermen Warning criteria, item (iv) squally weather"
+      note: "Squally weather: maximum sustained wind speed of 20 knots (37 km/h) or more."
+    unsafe:
+      value: 43
+      source: fao_2012
+      where: "Para 1.2.14.3, Design category C"
+      note: "Beaufort Force 6 (12 m/s = 43.2 km/h) or less; rounded down to 43 km/h. IMD issues a fishermen warning above 45 km/h."
+
+  wind_gusts:
+    unit: km/h
+    direction: above
+    caution:
+      value: 40
+      source: wmo_306
+      where: "Squall criterion (ww = 18), p. I.1-A-13"
+      note: "Wind rising to at least 11 m/s (22 knots, about 40 km/h). No source gives a gust limit for small boats specifically."
+    unsafe:
+      value: 63
+      source: wmo_558
+      where: "Para 2.2.43-2.2.44 and Part II 3.4.1(a)"
+      note: "Gale warning level, Beaufort 8 (34 knots, about 63 km/h). IMD bulletins use 'gusting 65 km/h'."
+
+  thunderstorm:
+    direction: codes
+    field: weather_code          # the hourly value this check reads
+    codes: [95, 96, 99]          # WMO weather codes for thunderstorms, as used by Open-Meteo
+    caution:
+      source: wmo_558
+      where: "Part II 3.4.2(b); also WMO-No. 471 para 2.5.7"
+      note: "Warnings should be given for severe thunderstorms; small craft are especially vulnerable. No number given, so CAUTION only is our call."
+
+  visibility:
+    unit: m
+    direction: below
+    caution:
+      value: 1852
+      source: wmo_558
+      where: "Part II 3.4.2(c)"
+      note: "Restricted visibility (one nautical mile or less). CAUTION only."
+
+# Fetched and shown in the details, NOT used for the verdict (no numeric source).
+display_only: [wave_period, wave_direction, wind_direction]

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Sea Safe">
+  <!-- Sea Safe mark, "Wave S": two waves, one the other turned round, that together read as an S.
+       Chosen by the owner on 13 Nov 2026 from four concepts. Black waves on a white tile. -->
+  <rect width="100" height="100" rx="24" fill="#f4f4f2"/>
+  <g fill="#0a0a0b" transform="translate(0 -4)">
+    <path id="wave" d="M14 50 C26 33 44 21 61 21 C77 21 86 29 86 39.5 A10 10 0 0 1 66 39.5 C66 36.5 62.5 35 58 35 C46 35 32 42 14 50 Z"/>
+    <use href="#wave" transform="rotate(180 50 50) translate(0 -8)"/>
+  </g>
+</svg>
