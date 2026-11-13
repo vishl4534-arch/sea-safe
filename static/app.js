@@ -877,6 +877,13 @@ function renderCard(v, reveal = true) {
         ${f.live ? `<button type="button" class="btn online-only" data-act="watch" aria-pressed="${!!watchingId(f)}">${icon("bell")}<span>${esc(t(watchingId(f) ? "watch.stop" : "watch.button"))}</span></button>` : ""}
       </div>
       <p id="act-note" class="small" role="status" hidden></p>
+      ${f.live ? `<form id="watch-form" class="watch-form" hidden>
+        <label for="watch-email">${esc(t("watch.email_label"))}</label>
+        <div class="watch-form-row">
+          <input id="watch-email" type="email" inputmode="email" autocomplete="email" maxlength="254" placeholder="you@example.com">
+          <button type="submit" class="btn primary">${icon("bell")}<span>${esc(t("watch.start"))}</span></button>
+        </div>
+      </form>` : ""}
       <p id="watch-note" class="note watch-note" role="status" hidden></p>
       <div id="safer" class="safer" aria-live="polite" hidden></div>
       ${rest.length ? `<ul class="reasons">${rest.map((r, i) => `<li>${icon(PICON[v.reason_icons[i + 1]])}<span>${esc(r)}</span></li>`).join("")}</ul>` : ""}
@@ -902,7 +909,9 @@ function renderCard(v, reveal = true) {
     </div>`;
   card.querySelectorAll(".card-body > *").forEach((el, i) => el.style.setProperty("--n", i));
   card.querySelectorAll("[data-act]").forEach((b) => { b.onclick = () => cardAction(b.dataset.act, b); });
-  if (f.live && watchingId(f)) watchNote(t("watch.on"), t("watch.on_note"));
+  if (f.live && watchingId(f)) { const w = watchList()[watchKey(f)]; watchNote(watchingHead(w), watchingSub(w)); }
+  const wf = card.querySelector("#watch-form");
+  if (wf) wf.onsubmit = (e) => { e.preventDefault(); startWatch(card.querySelector("[data-act=watch]"), $("watch-email").value.trim()); };
   renderOnline();
   syncWelcome();
 }
@@ -983,38 +992,83 @@ function watchNote(text, sub) {
   el.innerHTML = text ? `${icon("bell")}<span><strong>${esc(text)}</strong>${sub ? `<span class="note-sub">${esc(sub)}</span>` : ""}</span>` : "";
 }
 
+// The line under "Watching this trip...": the reminder, and where emails go (or that they can't).
+function watchingSub(w, extra = []) {
+  const parts = [...extra, t("watch.on_note")];
+  if (w && w.email) parts.push(t("watch.on_email", { email: w.email }));
+  return parts.join(" ");
+}
+// The bold line names how the fisher will be told: a notification, an email, or both.
+function watchingHead(w) {
+  const push = !w || w.push !== false;
+  return t(push && w && w.email ? "watch.on_both" : push ? "watch.on" : "watch.on_by_email");
+}
+function setWatchButton(btn, f) {
+  if (!btn) return;
+  const on = !!watchingId(f);
+  btn.setAttribute("aria-pressed", on);
+  btn.querySelector("span").textContent = t(on ? "watch.stop" : "watch.button");
+}
+
+// "Watch this trip": not watching yet -> open the form (email optional, the last one filled in);
+// watching -> stop.
 async function toggleWatch(btn) {
   const f = S.view && S.view.trip_fields;
   if (!f) return;
-  const all = watchList(), key = watchKey(f), id = watchingId(f);
-  const show = (text) => watchNote(text);
+  const id = watchingId(f);
+  if (!id) {
+    const form = $("watch-form");
+    if (!form) return;
+    form.hidden = !form.hidden;
+    if (!form.hidden) { const box = $("watch-email"); box.value = store.get("watch_email") || ""; box.focus(); }
+    return;
+  }
   btn.disabled = true;
   try {
-    if (id) {
-      await api("/api/watch/stop", { id });
-      delete all[key]; store.set("watches", JSON.stringify(all)); show("");
-    } else {
-      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { show(t("watch.unsupported")); return; }
-      if (await Notification.requestPermission() !== "granted") { show(t("watch.denied")); return; }
-      const k = await api("/api/push/key");
-      if (!k.ok) throw new Error("no push key");
-      const reg = await navigator.serviceWorker.ready;
-      const sub = (await reg.pushManager.getSubscription())
-        || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlBytes(k.key) });
-      const point = f.place_id === "map_point" && S.place && S.place.kind === "map_point" ? [S.place.lat, S.place.lon] : null;
-      const res = await api("/api/watch", { subscription: sub.toJSON(), region: S.region, place: f.place_id,
-        departure_local: f.departure, trip_hours: f.hours, trip_length_given_by_user: !!f.given, lang: S.lang, map_point: point });
-      if (!res.ok) { show(res.message || t("watch.failed")); return; }
-      all[key] = { id: res.id, until: new Date(f.departure).getTime() + 3600e3 };   // the server watches through the departure hour
-      store.set("watches", JSON.stringify(all)); watchNote(t("watch.on"), t("watch.on_note"));
-    }
-  } catch (e) { console.error(e); show(t("watch.failed")); }
-  finally {
-    btn.disabled = false;
-    const on = !!watchingId(f);
-    btn.setAttribute("aria-pressed", on);
-    btn.querySelector("span").textContent = t(on ? "watch.stop" : "watch.button");
-  }
+    await api("/api/watch/stop", { id });
+    const all = watchList(); delete all[watchKey(f)]; store.set("watches", JSON.stringify(all));
+    watchNote("");
+  } catch (e) { console.error(e); watchNote(t("watch.failed")); }
+  finally { btn.disabled = false; setWatchButton(btn, f); }
+}
+
+// Start watching: phone notifications when this browser can have them, and email when one is given. Either is
+// enough, so an iPhone without the Home Screen app can still watch by email (13 Nov 2026).
+async function startWatch(btn, email) {
+  const f = S.view && S.view.trip_fields;
+  if (!f) return;
+  const form = $("watch-form"), go = form && form.querySelector("button");
+  if (go) go.disabled = true;
+  let sub = null, why = "";
+  try {
+    if (email) store.set("watch_email", email);          // kept on this phone only, to fill the box next time
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) why = t("watch.unsupported");
+      else if (await Notification.requestPermission() !== "granted") why = t("watch.denied");
+      else {
+        const k = await api("/api/push/key");
+        if (!k.ok) throw new Error("no push key");
+        const reg = await navigator.serviceWorker.ready;
+        sub = (await reg.pushManager.getSubscription())
+          || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlBytes(k.key) });
+      }
+    } catch (e) { console.warn(e); why = t("watch.failed"); sub = null; }
+    if (!sub && !email) { watchNote(why || t("watch.failed")); return; }
+    const point = f.place_id === "map_point" && S.place && S.place.kind === "map_point" ? [S.place.lat, S.place.lon] : null;
+    const res = await api("/api/watch", { subscription: sub ? sub.toJSON() : null, email: email || null, region: S.region,
+      place: f.place_id, departure_local: f.departure, trip_hours: f.hours, trip_length_given_by_user: !!f.given,
+      lang: S.lang, map_point: point });
+    if (!res.ok) { watchNote(res.message || t("watch.failed")); return; }
+    const all = watchList();
+    const w = { id: res.id, until: new Date(f.departure).getTime() + 3600e3,   // the server watches through the departure hour
+                email: res.email ? email : null, push: !!sub };
+    all[watchKey(f)] = w; store.set("watches", JSON.stringify(all));
+    if (form) form.hidden = true;
+    const extra = [];
+    if (email && !res.email) extra.push(t("watch.email_off"));
+    watchNote(watchingHead(w), watchingSub(w, extra));
+  } catch (e) { console.error(e); watchNote(t("watch.failed")); }
+  finally { if (go) go.disabled = false; setWatchButton(btn, f); }
 }
 
 async function shareTrip() {

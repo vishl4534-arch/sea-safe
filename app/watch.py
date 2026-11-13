@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime
 from urllib.parse import urlparse
 
-from app import explain, service
+from app import explain, mailer, service
 from app.config import ROOT, load_app
 
 log = logging.getLogger("seasafe.watch")
@@ -98,16 +98,21 @@ def _save(watches: list[dict]) -> None:
     tmp.replace(_store())
 
 
-def add(subscription: dict, trip: dict, verdict: str) -> str:
-    """Keep a watch; the same phone watching the same trip again replaces the old one. Returns its id."""
+def _who(w: dict) -> str:
+    return (w.get("subscription") or {}).get("endpoint") or w.get("email") or ""
+
+
+def add(subscription: dict | None, trip: dict, verdict: str, email: str | None = None) -> str:
+    """Keep a watch (a phone subscription, an email, or both); the same phone or email watching the same trip
+    again replaces the old one. Returns its id. The email is kept only with the watch."""
     wid = uuid.uuid4().hex[:16]
+    new = {"id": wid, "subscription": subscription, "email": email, "trip": trip, "verdict": verdict,
+           "started": datetime.now().isoformat(timespec="seconds"), "checked": None}
     with _lock:
-        watches = [w for w in all_watches()
-                   if not (w["subscription"]["endpoint"] == subscription["endpoint"] and w["trip"] == trip)]
+        watches = [w for w in all_watches() if not (_who(w) == _who(new) and w["trip"] == trip)]
         if len(watches) >= cfg()["max_watches"]:
             watches.pop(0)                           # the oldest makes room
-        watches.append({"id": wid, "subscription": subscription, "trip": trip, "verdict": verdict,
-                        "started": datetime.now().isoformat(timespec="seconds"), "checked": None})
+        watches.append(new)
         _save(watches)
     return wid
 
@@ -143,6 +148,33 @@ def message(lang: str, res: dict, old: str, new: str) -> dict:
             "url": "/"}
 
 
+# ---- email (13 Nov 2026): a confirmation when watching starts, and each verdict change ------------------------
+def _in_background(fn) -> None:
+    """Emails take a second or two: never make the page wait for one."""
+    threading.Thread(target=fn, name="watch-mail", daemon=True).start()
+
+
+def mail(to: str, subject: str, body: str) -> bool:
+    try:
+        mailer.send(to, subject, body)
+        return True
+    except Exception as e:                           # not set up, refused, no connection: logged, never fatal
+        log.warning("email not sent: %s", e)
+        return False
+
+
+def confirm(email: str, trip: dict, res: dict) -> bool:
+    """The email when watching starts: the trip, the verdict now, how it works and how to stop (templates)."""
+    lang = trip.get("lang", "en")
+    place = explain.place_name(lang, res["place"])
+    body = "\n\n".join([
+        explain.t(lang, "email.start.body", place=place, departure=explain.when(lang, trip["departure_local"]),
+                  hours=trip["trip_hours"], verdict=explain.t(lang, f"verdict.{res['verdict']}"),
+                  minutes=cfg()["check_minutes"]),
+        explain.t(lang, "chat.b.disclaimer"), explain.t(lang, "email.footer")])
+    return mail(email, explain.t(lang, "email.start.subject", place=place), body)
+
+
 # ---- checking -----------------------------------------------------------------------------------------------
 def _departed(trip: dict) -> bool:
     now, _, _ = service._clock(service.get_region(trip["region"]), "live")
@@ -150,8 +182,9 @@ def _departed(trip: dict) -> bool:
 
 
 def check_all() -> int:
-    """Check every watch once. Sends a notification for each changed verdict; forgets watches whose departure
-    has passed, that can no longer be checked, or whose phone unsubscribed. Returns how many were sent."""
+    """Check every watch once. Sends a notification and/or an email for each changed verdict; forgets watches
+    whose departure has passed, that can no longer be checked, or that have nobody left to tell. Returns how many
+    changes were delivered."""
     sent, keep = 0, []
     snapshot = all_watches()
     for w in snapshot:
@@ -169,16 +202,26 @@ def check_all() -> int:
             continue                                 # cannot be checked any more (past, outside the window)
         w["checked"] = datetime.now().isoformat(timespec="seconds")
         if res["verdict"] != w["verdict"]:
-            try:
-                send(w["subscription"], message(trip.get("lang", "en"), res, w["verdict"], res["verdict"]))
-                sent += 1
-            except Gone:
-                log.info("watch %s: the phone unsubscribed", w["id"])
+            lang = trip.get("lang", "en")
+            payload, delivered = message(lang, res, w["verdict"], res["verdict"]), False
+            if w.get("subscription"):
+                try:
+                    send(w["subscription"], payload)
+                    delivered = True
+                except Gone:
+                    log.info("watch %s: the phone unsubscribed", w["id"])
+                    w["subscription"] = None
+                except Exception as e:
+                    log.warning("watch %s: notification not sent: %s", w["id"], e)
+            if w.get("email") and mail(w["email"], payload["title"],
+                                       payload["body"] + "\n\n" + explain.t(lang, "chat.b.disclaimer")):
+                delivered = True
+            if not w.get("subscription") and not w.get("email"):
+                continue                             # nobody left to tell
+            if not delivered:
+                keep.append(w)                       # tried again at the next check
                 continue
-            except Exception as e:                   # sent next time
-                log.warning("watch %s: notification not sent: %s", w["id"], e)
-                keep.append(w)
-                continue
+            sent += 1
             w["verdict"] = res["verdict"]
         keep.append(w)
     before = {w["id"] for w in snapshot}

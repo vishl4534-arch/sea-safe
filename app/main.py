@@ -1,6 +1,7 @@
 """FastAPI app: JSON routes for the page, plus the static page itself."""
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -14,7 +15,7 @@ from typing import Literal
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-from app import chat as chat_mod, explain, llm, net, service, voice, watch  # noqa: E402  (after .env is loaded)
+from app import chat as chat_mod, explain, llm, mailer, net, service, voice, watch  # noqa: E402  (after .env is loaded)
 from app.assessment import _near  # noqa: E402
 from app.config import ROOT, load_app, load_thresholds, load_translations  # noqa: E402
 
@@ -101,7 +102,8 @@ class AssessIn(BaseModel):
 
 # ---- watch this trip, on the server (13 Nov 2026): Web Push when the verdict changes ----------------------
 class WatchIn(BaseModel):
-    subscription: dict
+    subscription: dict | None = None            # the phone's push subscription, or none (email only)
+    email: str | None = Field(default=None, max_length=254)
     region: str
     place: str
     departure_local: str
@@ -109,6 +111,9 @@ class WatchIn(BaseModel):
     trip_length_given_by_user: bool = False
     lang: str = "en"
     map_point: list[float] | None = Field(default=None, min_length=2, max_length=2)
+
+
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class WatchStopIn(BaseModel):
@@ -128,9 +133,15 @@ def push_key():
 @app.post("/api/watch")
 def watch_start(body: WatchIn):
     """Start watching a trip (live forecasts only). The verdict now is the one later checks compare against."""
-    sub = body.subscription
-    if not watch.allowed_endpoint(sub.get("endpoint", "")) or not isinstance(sub.get("keys"), dict):
+    sub, email = body.subscription, (body.email or "").strip() or None
+    if sub is not None and (not watch.allowed_endpoint(sub.get("endpoint", "")) or not isinstance(sub.get("keys"), dict)):
         raise HTTPException(422, "not a browser push subscription")
+    if email is not None and not _EMAIL.match(email):
+        raise HTTPException(422, "not an email address")
+    if sub is None and email is None:
+        raise HTTPException(422, "a phone subscription or an email is needed")
+    if sub is None and not mailer.available():      # nobody could be told: do not pretend to watch
+        return {"ok": False, "message": explain.t(explain.pick_lang(body.lang, body.region), "watch.cant")}
     lang = explain.pick_lang(body.lang, body.region)
     res = _safe(lambda: service.assess_trip(body.region, body.place, body.departure_local, body.trip_hours,
                                             body.trip_length_given_by_user, "live", body.map_point))
@@ -139,8 +150,11 @@ def watch_start(body: WatchIn):
     trip = {"region": body.region, "place": body.place, "departure_local": body.departure_local,
             "trip_hours": body.trip_hours, "trip_length_given_by_user": body.trip_length_given_by_user,
             "lang": lang, "map_point": body.map_point}
-    wid = watch.add({"endpoint": sub["endpoint"], "keys": sub["keys"]}, trip, res["verdict"])
-    return {"ok": True, "id": wid, "verdict": res["verdict"]}
+    wid = watch.add({"endpoint": sub["endpoint"], "keys": sub["keys"]} if sub else None, trip, res["verdict"], email)
+    emailing = bool(email) and mailer.available()
+    if emailing:                                # the confirmation, without making the page wait
+        watch._in_background(lambda: watch.confirm(email, trip, res))
+    return {"ok": True, "id": wid, "verdict": res["verdict"], "email": emailing}
 
 
 @app.post("/api/watch/stop")

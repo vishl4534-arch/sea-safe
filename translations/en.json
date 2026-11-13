@@ -437,5 +437,15 @@
   "watch.failed": "Couldn't start watching. Try again.",
   "push.title": "{place}: now {verdict}",
   "push.body": "Leaving {departure}: was {old}, now {new}. Tap for the full answer.",
-  "watch.on_note": "Notifications can be late: always check the official warnings."
+  "watch.on_note": "Notifications can be late: always check the official warnings.",
+  "email.start.subject": "Sea Safe is watching your trip from {place}",
+  "email.start.body": "Sea Safe is watching your trip: {place}, leaving {departure}, {hours} hours. The verdict now is {verdict}.\n\nWe check the forecast again every {minutes} minutes until you leave, and email you if the verdict changes. To stop, open Sea Safe and tap \"Stop watching\".",
+  "email.footer": "You get this email because you asked Sea Safe to watch this trip. Your address is kept only until the watch ends.",
+  "watch.email_label": "Email me too (optional)",
+  "watch.start": "Start watching",
+  "watch.on_email": "Emails go to {email}.",
+  "watch.email_off": "Email isn't set up on this server, so updates come only as phone notifications.",
+  "watch.on_by_email": "Watching this trip until you leave. If the verdict changes, you'll get an email.",
+  "watch.on_both": "Watching this trip until you leave. If the verdict changes, you'll get a notification and an email.",
+  "watch.cant": "Email isn't set up on this server and this browser can't get notifications, so this trip can't be watched here."
 }

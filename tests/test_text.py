@@ -85,7 +85,7 @@ def test_no_template_glues_a_suffix_onto_a_place_name(lang):
             # "Malpe: SAFE", "...: Malpe, 4-hour trip."
             # chat.b.safest.*: "Khor Fakkan, 4-hour trip: ..." (13 Nov 2026), the same bare form as chat.b.trip.
             assert "{place}" not in v or k in ("headline", "ui.usual", "chat.b.trip") \
-                or k.startswith("chat.b.safest.") or k == "push.title", f"{lang}:{k} should use a stored form"   # push.title: "Khor Fakkan: now CAUTION"
+                or k.startswith("chat.b.safest.") or k in ("push.title", "email.start.subject", "email.start.body"), f"{lang}:{k} should use a stored form"   # push.title: "Khor Fakkan: now CAUTION"
     for pid in [k[6:] for k in tr if k.startswith("place.")]:
         assert f"place_from.{pid}" in tr
 
